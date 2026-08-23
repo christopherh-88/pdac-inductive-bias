@@ -5,7 +5,7 @@ __pycache__/
 *.egg-info/
 
 # Data — never committed (PANORAMA is CC BY-NC and ~180 GB)
-data/
+/data/
 nnUNet_raw/
 nnUNet_preprocessed/
 nnUNet_results/
