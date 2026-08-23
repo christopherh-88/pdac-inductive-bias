@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Data — never committed (PANORAMA is CC BY-NC and ~180 GB)
+data/
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
+*.mha
+*.nii.gz
+*.nrrd
+*.zip
+
+# Analysis outputs (results are committed selectively and deliberately)
+results/
+*.png
+!docs/**/*.png
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

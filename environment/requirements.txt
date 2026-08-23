@@ -1,0 +1,28 @@
+# Core: nnU-Net master is required — the PrimusV2 trainers (nnUNet_PrimusV2{S,B,M,L}_Trainer)
+# live there and are not guaranteed to be in the PyPI release.
+# Pin the exact commit at week-one verification and record it in config/frozen_thresholds.yaml.
+nnunetv2 @ git+https://github.com/MIC-DKFZ/nnUNet.git
+torch>=2.4
+
+# Data handling
+SimpleITK>=2.3
+nibabel>=5.2
+numpy>=1.26
+pandas>=2.2
+openpyxl>=3.1          # clinical_information.xlsx
+pyyaml>=6.0
+tqdm>=4.66
+
+# Statistics
+scipy>=1.13
+statsmodels>=0.14
+
+# Surface metrics (NSD at 2 mm)
+surface-distance @ git+https://github.com/google-deepmind/surface-distance.git
+
+# Downloads
+zenodo-get>=1.6
+
+# Figures
+matplotlib>=3.9
+seaborn>=0.13

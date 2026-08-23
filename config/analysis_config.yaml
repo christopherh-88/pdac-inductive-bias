@@ -1,0 +1,108 @@
+# Frozen analysis configuration. FROZEN at tag prereg-v1 — do not edit after tagging.
+# Every analysis script reads this file; PREREGISTRATION.md is the prose mirror.
+# Data-derived thresholds (tertile cut points, source grouping, presets) live in
+# frozen_thresholds.yaml, written ONCE by compute_strata.py / make_splits.py and then frozen.
+
+study:
+  name: pdac-inductive-bias
+  preregistration_tag: prereg-v1
+  frozen_date: 2026-08-23
+
+arms:
+  cnn:
+    framework: nnunetv2
+    # preset (M/L/XL) chosen by confirmed VRAM; recorded in frozen_thresholds.yaml
+    plans_candidates: [nnUNetResEncUNetMPlans, nnUNetResEncUNetLPlans, nnUNetResEncUNetXLPlans]
+    configuration: 3d_fullres
+  transformer:
+    framework: nnunetv2
+    trainer_candidates: [nnUNet_PrimusV2S_Trainer, nnUNet_PrimusV2B_Trainer, nnUNet_PrimusV2M_Trainer, nnUNet_PrimusV2L_Trainer]
+    configuration: 3d_fullres
+    fallback: primus_v1   # only if PrimusV2 fails week-one verification; gap reported
+  identity_control:
+    trainer: nnUNet_PrimusV2_Identity_Trainer   # src/trainers/primus_identity_trainer.py
+
+training:
+  epochs: 1000
+  iterations_per_epoch: 250
+  folds: 5
+  seed_replicates:
+    fold: 0
+    extra_seeds: [1, 2]      # in addition to the default seed run
+  from_scratch: true         # Tiers A and B; pretraining only in Tier C, both arms or neither
+
+splits:
+  n_folds: 5
+  split_seed: 20260823
+  group_level: patient
+  stratify_by: [source, volume_tertile]
+
+hypotheses:
+  h1:
+    equivalence_margin_dice_points: 3.0     # TOST on large-lesion tertile
+    regression_covariates: [log_volume, cnr, source]
+    supported_if: "95% CI of slope of delta_dice on log_volume < 0"
+  h2:
+    occlusion_shells_mm: [[10, 20], [20, 40], [40, 80]]
+    decisive_shell_mm: [40, 80]
+    margin_dice_points: 2.0
+    fill_mode: shell_mean_hu                # replace shell with its own mean HU
+    reference: cnn_effective_receptive_field_from_input_gradients
+  h2b:
+    comparison: identity_control_vs_full_transformer_stratified_map
+  h3:
+    boundary_perturbations_voxels: [1, 2]   # erosion + dilation each, plus random jitter
+    jitter: {enabled: true, magnitude_voxels: 1, seed: 20260823}
+    share_threshold: 0.5                    # supported if >50% of LOSO Dice loss inside floor
+
+strata:
+  volume:
+    method: tertiles_over_cohort            # computed once -> frozen_thresholds.yaml
+    secondary_cut_diameter_mm: 20           # 2 cm clinical threshold, max in-plane diameter
+  cnr:
+    ring_width_mm_primary: 10
+    ring_width_mm_sensitivity: [5, 15]
+    ring_label: 4                           # automatic pancreas parenchyma
+    exclude_labels: [1, 2, 3, 5, 6]         # lesion, veins, arteries, duct, CBD
+    rank_stability_min_spearman: 0.8        # below this, contrast axis reported exploratory
+  source:
+    metadata_file: clinical_information.xlsx
+    grouping: see_frozen_thresholds         # fixed at split freeze
+
+metrics:
+  dice: true
+  nsd_tolerance_mm: 2.0
+  hd95: true
+  detection:
+    min_reference_coverage: 0.10            # detected if prediction covers >=10% of lesion
+  false_positive:
+    min_volume_mm3: 100.0                   # FP component threshold
+    overlap_with_reference: 0               # zero-overlap components only
+
+statistics:
+  bootstrap_resamples: 2000
+  bootstrap_level: patient
+  bootstrap_seed: 20260823
+  ci: 0.95
+  wilcoxon: within_each_stratum
+  tost_wherever_claim_is_no_difference: true
+
+labels:
+  panorama:
+    pdac_lesion: 1
+    veins: 2
+    arteries: 3
+    pancreas_parenchyma: 4
+    pancreatic_duct: 5
+    common_bile_duct: 6
+
+evaluation_rules:
+  test_folds_manual_delineations_only: true
+  model_generated_delineations_in_eval: never
+  model_generated_delineations_as_training: optional_separately_reported_ablation
+  nih_role: negative_control_only
+  msd_restrict_to_pdac: true
+
+failure_gallery:
+  selection_rule: largest_abs_delta_dice_within_each_stratum
+  per_stratum: 1
