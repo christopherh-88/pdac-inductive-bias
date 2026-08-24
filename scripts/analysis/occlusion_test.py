@@ -53,6 +53,10 @@ def occlude_case(case_id, img_path, manual_path, out_dirs):
             occluded[shell] = hu[shell].mean()   # the shell's own mean HU
         out = sitk.GetImageFromArray(occluded)
         out.CopyInformation(img)
+        # case_id passed explicitly rather than re-derived from img_path.stem: a naive
+        # `.replace("_0000", "")` corrupts case IDs whose study-number suffix itself contains
+        # that substring (e.g. "100000_00001" -> "1000001"), silently mismatching cases in
+        # stage_score() (which just `continue`s on a missing file, no error raised).
         sitk.WriteImage(out, str(out_dir / f"{case_id}_0000.nii.gz"), useCompression=True)
     return True
 

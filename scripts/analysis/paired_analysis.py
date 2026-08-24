@@ -43,7 +43,8 @@ def main():
     strata = pd.read_csv(args.strata)
     cohort_full = pd.read_csv(args.cohort)
     cohort = cohort_full[["case_id", "patient_id"]].copy()
-    cohort["source"] = cohort_full[args.source_col] if args.source_col in cohort_full.columns else "unknown"
+    cohort["source"] = (cohort_full[args.source_col] if args.source_col in cohort_full.columns
+                        else "unknown")
 
     rows = []
     for r in tqdm(strata.itertuples(), total=len(strata)):
