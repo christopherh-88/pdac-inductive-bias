@@ -16,9 +16,13 @@ arms:
     configuration: 3d_fullres
   transformer:
     framework: nnunetv2
+    # V2 chosen over upstream-recommended V3S; see PREREGISTRATION.md "Primus V2 vs V3S".
     trainer_candidates: [nnUNet_PrimusV2S_Trainer, nnUNet_PrimusV2B_Trainer, nnUNet_PrimusV2M_Trainer, nnUNet_PrimusV2L_Trainer]
     configuration: 3d_fullres
     fallback: primus_v1   # only if PrimusV2 fails week-one verification; gap reported
+    tokenizer_stride_voxels: [8, 8, 8]   # fixed across S/B/M/L, both V2 and V3S
+    # effective_token_count: patch_size / 8 per axis; numeric value written to
+    # frozen_thresholds.yaml once nnU-Net fingerprinting runs on the frozen cohort.
   identity_control:
     trainer: nnUNet_PrimusV2_Identity_Trainer   # src/trainers/primus_identity_trainer.py
 

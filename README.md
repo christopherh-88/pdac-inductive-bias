@@ -56,6 +56,7 @@ scripts/training/   week-one pipeline verification, Tier A launcher
 scripts/analysis/   strata computation, paired analysis, occlusion test, boundary tolerance, metrics
 src/trainers/       identity-ablation trainer (H2b)
 splits/             frozen 5-fold splits + case lists (committed once, never edited)
+logs/               run_log.csv — sole source of truth for anything that touched a GPU
 docs/               project description v2
 ```
 

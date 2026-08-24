@@ -27,6 +27,15 @@ print([n for n in names if 'rimus' in n] or 'NO PRIMUS TRAINER FOUND — check n
 EOF
 ```
 
+**Verified 2026-08-24 (CPU-only, no GPU needed for this check):** nnU-Net master @
+`0e495086eb108ff79afe106291e8c15bd2f2bc3a` exports all four required trainer classes —
+`nnUNet_PrimusV2S_Trainer`, `nnUNet_PrimusV2B_Trainer`, `nnUNet_PrimusV2M_Trainer`,
+`nnUNet_PrimusV2L_Trainer` — plus the V3 family (`nnUNet_PrimusV3{S,B,M,L}_Trainer`, not used;
+see `preregistration/PREREGISTRATION.md` § "Primus V2 vs V3S"). Full `pip freeze` from that
+check is in `environment/pip_freeze_verification.txt`. This confirms the trainers *import*;
+it does not confirm they *instantiate on our patch size* or fit VRAM — those still need real
+data (fingerprinting) and a real GPU, and are still open Phase 0 items for R2/R3.
+
 ## 2. nnU-Net environment variables
 
 ```bash

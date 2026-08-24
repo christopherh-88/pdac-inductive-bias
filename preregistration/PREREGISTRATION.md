@@ -108,6 +108,45 @@ All margins below are fixed here and reported as pre-set whether or not they are
   the gap to published numbers reported. No fallback to hybrids (SwinUNETR, CoTr, nnFormer,
   TransUNet).
 
+### Primus V2 vs V3S
+
+**Decision:** the transformer arm uses **PrimusV2** (`nnUNet_PrimusV2{S,B,M,L}_Trainer`), not
+the upstream-recommended `nnUNet_PrimusV3S_Trainer`. Settled here, before freeze, per the
+project description's requirement; not revisited inside Tiers A/B.
+
+**Reasoning:**
+- V3S uses a materially different tokenizer than V2 — aggressive channel scaling (32 → 64 →
+  256 → 1024) with multi-resolution skip connections, versus V2's iterative residual tokenizer
+  (32 → 32 → 64 → 128). Switching now would mean re-doing VRAM/step-budget matching against a
+  different architecture family, not swapping a trainer flag.
+- V2 is the version this study's design, budget matching, and identity-control trainer
+  (`src/trainers/primus_identity_trainer.py`) were built against.
+- No PDAC-specific validation of V3S exists yet to weigh against V2's documented integration
+  in nnU-Net master. Upstream's "recommended" label is itself recent and may move again before
+  Tier B.
+- V3S's own published ablation (identity block: 84.48 vs. full model 87.98 Dice, five-fold
+  average, generic segmentation tasks per the Primus documentation page) is a useful external
+  sanity check for the direction of our own H2b, but is not PDAC evidence and doesn't on its
+  own justify switching architecture families three weeks before freeze.
+
+**Revisit policy:** V3S is a candidate for Tier C (Nov 2026+) only, added as a new tag with a
+written reason, per the deviations policy in the header of this document — never a silent
+substitution inside Tier A/B.
+
+### Token resolution
+
+Primus uses fixed **8 × 8 × 8 voxel tokens**, constant across the S/B/M/L variants for both V2
+and V3S (per the nnU-Net Primus documentation page). Effective token count along each axis is
+`patch_size_axis / 8`; total effective tokens is the product across the three axes.
+
+The numeric patch size — and therefore the numeric effective token count — is a property of
+the frozen cohort's nnU-Net fingerprint, which does not exist until PANORAMA is downloaded and
+preprocessed (R2, Phase 0). That number is written to `config/frozen_thresholds.yaml` at
+fingerprinting time, not fabricated here. What is fixed now, before any data-dependent number
+exists, is the 8 × 8 × 8 stride itself and the rule that patch size must be chosen to divide
+evenly by it in all three axes — so a downstream small-lesion failure can never be blamed on
+an unrecorded or accidental tokenization mismatch.
+
 ## 6. Metrics and reporting
 
 Dice, normalized surface Dice at 2 mm, HD95, case-level lesion detection sensitivity, and
