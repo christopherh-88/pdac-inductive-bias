@@ -7,6 +7,7 @@ false positives (zero-overlap components >= 100 mm^3).
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import SimpleITK as sitk
 import yaml
 from scipy import ndimage
@@ -64,6 +65,31 @@ def false_positives(pred: np.ndarray, ref: np.ndarray, spacing_zyx) -> int:
                 CFG["metrics"]["false_positive"]["min_volume_mm3"]:
             fp += 1
     return fp
+
+
+def bootstrap_ci(df: pd.DataFrame, stat_fn, n_boot: int, seed: int, patient_col="patient_id"):
+    """Patient-level cluster bootstrap CI, shared by every script that needs one.
+
+    Resamples whole patients (with replacement) rather than rows, so a patient's rows always
+    move together. Precomputes each patient's positional row-indices once, then per resample
+    concatenates small integer-index arrays and takes a single vectorized .iloc — avoids the
+    O(n_boot * n_patients) boolean-mask filtering that dominates a naive per-patient filter loop.
+    """
+    rng = np.random.default_rng(seed)
+    df = df.reset_index(drop=True)
+    groups = df.groupby(patient_col).indices  # {patient_id: ndarray of positional indices}
+    patients = np.array(list(groups.keys()))
+    out = []
+    for _ in range(n_boot):
+        sample = rng.choice(patients, size=len(patients), replace=True)
+        pos = np.concatenate([groups[p] for p in sample])
+        boot = df.iloc[pos]
+        try:
+            out.append(stat_fn(boot))
+        except Exception:
+            out.append(np.nan)
+    lo, hi = np.nanpercentile(out, [2.5, 97.5])
+    return float(lo), float(hi)
 
 
 def all_metrics(pred_path, ref_path):

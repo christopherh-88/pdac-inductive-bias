@@ -73,6 +73,15 @@ class nnUNet_PrimusV2_Identity_Trainer(_Base):
         assert params_after < params_before * 0.8, (
             f"Identity ablation removed too few parameters "
             f"({params_before} -> {params_after}); the wrong module list was replaced.")
+
+        # super().initialize() already built self.optimizer / self.lr_scheduler from the
+        # pre-ablation network. Left alone, the optimizer keeps stale param_groups pointing at
+        # the now-orphaned transformer-block weights (dead momentum/state buffers, no gradient
+        # ever reaches them) — wasted VRAM against the pre-registered matched-budget control.
+        # Rebuild both from the post-ablation parameters.
+        self.optimizer, self.lr_scheduler = self.configure_optimizers()
+
         self.print_to_log_file(
             f"IDENTITY CONTROL ACTIVE (base={_BASE_NAME}): {n_blocks} transformer blocks "
-            f"-> identity; params {params_before:,} -> {params_after:,}")
+            f"-> identity; params {params_before:,} -> {params_after:,}; "
+            f"optimizer rebuilt post-ablation")
