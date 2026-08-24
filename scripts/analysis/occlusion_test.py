@@ -29,13 +29,13 @@ import SimpleITK as sitk
 import yaml
 from tqdm import tqdm
 
-from metrics import CFG, load_mask, dice
+from metrics import CFG, load_mask, dice, bootstrap_ci
 
 SHELLS = [tuple(s) for s in CFG["hypotheses"]["h2"]["occlusion_shells_mm"]]
 LESION = CFG["labels"]["panorama"]["pdac_lesion"]
 
 
-def occlude_case(img_path, manual_path, out_dirs):
+def occlude_case(case_id, img_path, manual_path, out_dirs):
     img = sitk.ReadImage(str(img_path))
     hu = sitk.GetArrayFromImage(img).astype(np.float32)
     seg = sitk.ReadImage(str(manual_path))
@@ -53,8 +53,7 @@ def occlude_case(img_path, manual_path, out_dirs):
             occluded[shell] = hu[shell].mean()   # the shell's own mean HU
         out = sitk.GetImageFromArray(occluded)
         out.CopyInformation(img)
-        sitk.WriteImage(out, str(out_dir / (img_path.stem.split(".")[0].replace("_0000", "")
-                                            + "_0000.nii.gz")), useCompression=True)
+        sitk.WriteImage(out, str(out_dir / f"{case_id}_0000.nii.gz"), useCompression=True)
     return True
 
 
@@ -69,7 +68,7 @@ def stage_occlude(args):
         out_dirs.append(d)
     n = 0
     for r in tqdm(cases.itertuples(), total=len(cases)):
-        n += occlude_case(Path(r.path), Path(r.manual_label), out_dirs)
+        n += occlude_case(r.case_id, Path(r.path), Path(r.manual_label), out_dirs)
     fold_map.to_csv(args.workdir / "case_fold_manifest.csv", index=False)
     print(f"Occluded {n} cases x {len(SHELLS)} shells under {args.workdir}/occluded/")
     print("Now run nnUNetv2_predict per arm per shell dir with -f <fold holding the case out> "
@@ -107,13 +106,8 @@ def stage_score(args):
     dec = df[df["shell"] == f"{dec_lo}-{dec_hi}"].pivot_table(
         index=["case_id", "patient_id"], columns="arm", values="dice_loss").reset_index().dropna()
     dec["contrast"] = dec["tf"] - dec["cnn"]
-    rng = np.random.default_rng(st["bootstrap_seed"])
-    pats = dec["patient_id"].unique()
-    boots = []
-    for _ in range(st["bootstrap_resamples"]):
-        s = rng.choice(pats, size=len(pats), replace=True)
-        boots.append(pd.concat([dec[dec["patient_id"] == p] for p in s])["contrast"].mean())
-    lo_ci, hi_ci = np.percentile(boots, [2.5, 97.5])
+    lo_ci, hi_ci = bootstrap_ci(dec, lambda b: b["contrast"].mean(),
+                                st["bootstrap_resamples"], st["bootstrap_seed"])
     supported = (dec["contrast"].mean() >= margin) and (lo_ci > 0)
     print(f"H2 decisive shell {dec_lo}-{dec_hi} mm: mean(tf loss - cnn loss) = "
           f"{dec['contrast'].mean():.4f}, CI [{lo_ci:.4f}, {hi_ci:.4f}], margin {margin:.2f} "

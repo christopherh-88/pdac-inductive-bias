@@ -52,13 +52,19 @@ config/             analysis_config.yaml (frozen) + frozen_thresholds.yaml (data
 environment/        SETUP.md, requirements.txt
 scripts/download/   PANORAMA download (Zenodo) + labels
 scripts/data/       deduplication, patient-level splits, nnU-Net dataset conversion
-scripts/training/   week-one pipeline verification, Tier A launcher
-scripts/analysis/   strata computation, paired analysis, occlusion test, boundary tolerance, metrics
+scripts/training/   week-one pipeline verification, Tier A launcher, RUN_LOG.md (GPU run log),
+                    record_arch_stats.py (freezes patch/token size, params, VRAM)
+scripts/analysis/   strata computation, paired analysis, occlusion test, boundary tolerance,
+                    effective receptive field, NIH false-positive harness, failure gallery,
+                    seed-vs-fold variance decomposition, metrics
 src/trainers/       identity-ablation trainer (H2b)
 splits/             frozen 5-fold splits + case lists (committed once, never edited)
-logs/               run_log.csv — sole source of truth for anything that touched a GPU
 docs/               project description v2
+tests/              synthetic-data end-to-end smoke test for the data/analysis pipeline
 ```
+
+Run `python tests/run_smoke_test.py` after changing any data or analysis script — see
+[tests/README.md](tests/README.md).
 
 ## Workflow (Tier A)
 
@@ -94,15 +100,28 @@ bash scripts/training/run_tier_a.sh
   splits are frozen, and recorded in `config/frozen_thresholds.yaml`.
 - PrimusV2 preset (S/B/M/L) and ResEnc preset (M/L/XL) are chosen together once GPU VRAM is
   confirmed, to satisfy the matched-budget control; recorded in the frozen config.
-- The identity-ablation trainer must be verified against the actual PrimusV2 module layout in
-  the installed nnU-Net commit during week-one verification (it asserts loudly if the
-  architecture does not match expectations).
+- RESOLVED (2026-08-23): nnU-Net master now also ships `nnUNet_PrimusV3S_Trainer` and
+  recommends it as the new default over V2. The transformer arm stays on **PrimusV2** — the
+  project's rationale for a pure-transformer arm depends on the published Primus/TMLR
+  parity-with-ResEnc-L benchmark, which V3 (documented upstream as "a preliminary version")
+  doesn't yet have. See `preregistration/PREREGISTRATION.md` section 5.
+- PARTIALLY VERIFIED (2026-08-23): installed nnU-Net master (commit `0e49508`) on CPU and
+  confirmed `nnUNet_PrimusV2{S,B,M,L}_Trainer` all resolve via `recursive_find_python_class`
+  exactly as `primus_identity_trainer.py` expects. Built `PrimusV2M` directly at our candidate
+  patch size (96×160×160, divides evenly by the 8×8×8 tokenizer stride) and ran a real forward
+  pass (150.4M params). Ran the identity trainer's `_find_transformer_blocks` logic against
+  this real network: it correctly locates `eva.blocks` (16 blocks) and ablation drops 95.5% of
+  parameters, with a valid post-ablation forward pass. **Not yet verified:** the full
+  `nnUNetTrainer.initialize()` path (needs a real preprocessed dataset + plans.json) and
+  anything GPU-dependent (VRAM, step time, multi-epoch training) — those remain week-one items.
 
 ## Key upstream references
 
 - nnU-Net Revisited (Isensee et al., MICCAI 2024): arXiv:2404.09556
-- Primus / PrimusV2 (Wald et al., 2025): arXiv:2503.01835 —
+- Primus / PrimusV2 (Wald et al.): published in TMLR —
+  [OpenReview](https://openreview.net/forum?id=x4vZE4PDEu); preprint arXiv:2503.01835 —
   [nnU-Net Primus documentation](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/primus.md)
+  (also documents PrimusV3, not used here — see "Known open items" above)
 - [nnU-Net ResEnc presets](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/resenc_presets.md)
 - [PANORAMA datasets page](https://panorama.grand-challenge.org/datasets-imaging-labels/) ·
   [panorama_labels](https://github.com/DIAGNijmegen/panorama_labels)

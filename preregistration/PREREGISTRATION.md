@@ -107,23 +107,25 @@ All margins below are fixed here and reported as pre-set whether or not they are
 - Fallback: if PrimusV2 cannot be integrated and verified in week one, Primus v1 is used and
   the gap to published numbers reported. No fallback to hybrids (SwinUNETR, CoTr, nnFormer,
   TransUNet).
-
 ### Primus V2 vs V3S
 
 **Decision:** the transformer arm uses **PrimusV2** (`nnUNet_PrimusV2{S,B,M,L}_Trainer`), not
-the upstream-recommended `nnUNet_PrimusV3S_Trainer`. Settled here, before freeze, per the
-project description's requirement; not revisited inside Tiers A/B.
+the upstream-recommended `nnUNet_PrimusV3S_Trainer`. Settled here, before freeze (2026-08-23),
+per the project description's requirement; not revisited inside Tiers A/B.
 
 **Reasoning:**
+- nnU-Net master now ships `nnUNet_PrimusV3S_Trainer` and flags it `# (recommended)`, but its
+  own documentation calls PrimusV3 "a preliminary version ... with a more convolution heavy
+  patch embedding" — i.e. upstream's own stated status, not just our caution.
+- The project's rationale for a pure-transformer arm rests on the published Primus/TMLR
+  benchmark showing PrimusV2 reaches parity with ResEnc-L. V3S has no equivalent independent
+  validation yet; switching would sever the study's stated grounding evidence.
 - V3S uses a materially different tokenizer than V2 — aggressive channel scaling (32 → 64 →
   256 → 1024) with multi-resolution skip connections, versus V2's iterative residual tokenizer
   (32 → 32 → 64 → 128). Switching now would mean re-doing VRAM/step-budget matching against a
   different architecture family, not swapping a trainer flag.
 - V2 is the version this study's design, budget matching, and identity-control trainer
   (`src/trainers/primus_identity_trainer.py`) were built against.
-- No PDAC-specific validation of V3S exists yet to weigh against V2's documented integration
-  in nnU-Net master. Upstream's "recommended" label is itself recent and may move again before
-  Tier B.
 - V3S's own published ablation (identity block: 84.48 vs. full model 87.98 Dice, five-fold
   average, generic segmentation tasks per the Primus documentation page) is a useful external
   sanity check for the direction of our own H2b, but is not PDAC evidence and doesn't on its

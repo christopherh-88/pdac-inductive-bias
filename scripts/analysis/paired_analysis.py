@@ -25,22 +25,7 @@ import yaml
 from scipy.stats import wilcoxon
 from tqdm import tqdm
 
-from metrics import all_metrics, CFG
-
-
-def bootstrap_stat(df, stat_fn, n_boot, seed):
-    rng = np.random.default_rng(seed)
-    patients = df["patient_id"].unique()
-    out = []
-    for _ in range(n_boot):
-        sample = rng.choice(patients, size=len(patients), replace=True)
-        boot = pd.concat([df[df["patient_id"] == p] for p in sample])
-        try:
-            out.append(stat_fn(boot))
-        except Exception:
-            out.append(np.nan)
-    lo, hi = np.nanpercentile(out, [2.5, 97.5])
-    return float(lo), float(hi)
+from metrics import all_metrics, bootstrap_ci, CFG
 
 
 def main():
@@ -56,9 +41,9 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
     strata = pd.read_csv(args.strata)
-    cohort = pd.read_csv(args.cohort)[["case_id", "patient_id"]].assign(
-        source=pd.read_csv(args.cohort)[args.source_col] if args.source_col in
-        pd.read_csv(args.cohort).columns else "unknown")
+    cohort_full = pd.read_csv(args.cohort)
+    cohort = cohort_full[["case_id", "patient_id"]].copy()
+    cohort["source"] = cohort_full[args.source_col] if args.source_col in cohort_full.columns else "unknown"
 
     rows = []
     for r in tqdm(strata.itertuples(), total=len(strata)):
@@ -85,7 +70,7 @@ def main():
     # 2. Regression + bootstrap CI on log-volume slope
     model = smf.ols("delta_dice ~ log_volume + cnr + C(source)", data=df).fit()
     slope = model.params["log_volume"]
-    lo, hi = bootstrap_stat(
+    lo, hi = bootstrap_ci(
         df, lambda b: smf.ols("delta_dice ~ log_volume + cnr + C(source)", data=b).fit().params["log_volume"],
         st["bootstrap_resamples"], st["bootstrap_seed"])
     h1_supported = hi < 0
@@ -103,7 +88,7 @@ def main():
     # 4. TOST at +/-3 Dice points on the large-lesion tertile (bootstrap CI vs margins)
     margin = CFG["hypotheses"]["h1"]["equivalence_margin_dice_points"] / 100.0
     large = df[df["volume_tertile"] == df["volume_tertile"].max()]
-    lo_m, hi_m = bootstrap_stat(large, lambda b: b["delta_dice"].mean(),
+    lo_m, hi_m = bootstrap_ci(large, lambda b: b["delta_dice"].mean(),
                                 st["bootstrap_resamples"], st["bootstrap_seed"] + 1)
     equivalent = (lo_m > -margin) and (hi_m < margin)
     print(f"Large-tertile mean delta_dice CI [{lo_m:.4f}, {hi_m:.4f}] vs +/-{margin:.2f} "
@@ -113,7 +98,7 @@ def main():
     cells = []
     for (vt, ct), g in df.groupby(["volume_tertile", "cnr_tertile"]):
         for arm in ("cnn", "tf"):
-            lo_c, hi_c = bootstrap_stat(g, lambda b, a=arm: b[f"dice_{a}"].mean(),
+            lo_c, hi_c = bootstrap_ci(g, lambda b, a=arm: b[f"dice_{a}"].mean(),
                                         st["bootstrap_resamples"], st["bootstrap_seed"] + 2)
             cells.append({"volume_tertile": vt, "cnr_tertile": ct, "arm": arm, "n": len(g),
                           "dice_mean": g[f"dice_{arm}"].mean(), "ci_lo": lo_c, "ci_hi": hi_c,

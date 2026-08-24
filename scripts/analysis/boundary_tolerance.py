@@ -24,7 +24,7 @@ import yaml
 from scipy import ndimage
 from tqdm import tqdm
 
-from metrics import CFG, load_mask, dice
+from metrics import CFG, load_mask, dice, bootstrap_ci
 
 
 def jitter_mask(mask, rng, magnitude=1):
@@ -78,15 +78,26 @@ def main():
 
     if args.loso and args.loso.exists():
         loso = pd.read_csv(args.loso).merge(floor[["case_id", "tolerance_floor_dice"]], on="case_id")
+        loso = loso.merge(cohort[["case_id", "patient_id"]], on="case_id")
         loso["dice_loss"] = loso["dice_in_domain"] - loso["dice_loso"]
         loso["tolerable_loss"] = 1 - loso["tolerance_floor_dice"]
         loso["loss_inside_floor"] = np.minimum(loso["dice_loss"].clip(lower=0), loso["tolerable_loss"])
+
+        def share_stat(g):
+            total = g["dice_loss"].clip(lower=0).sum()
+            if total <= 0:
+                return np.nan
+            return g["loss_inside_floor"].sum() / total
+
+        st = CFG["statistics"]
         summary = {}
         for arm, g in loso.groupby("arm"):
-            total = g["dice_loss"].clip(lower=0).sum()
-            share = float(g["loss_inside_floor"].sum() / total) if total > 0 else np.nan
-            summary[arm] = {"share_inside_floor": share, "n": int(len(g))}
-            print(f"{arm}: {share:.1%} of cross-source Dice loss inside the boundary floor")
+            share = float(share_stat(g))
+            lo, hi = bootstrap_ci(g, share_stat, st["bootstrap_resamples"], st["bootstrap_seed"])
+            summary[arm] = {"share_inside_floor": share, "share_inside_floor_ci": [lo, hi],
+                            "n": int(len(g))}
+            print(f"{arm}: {share:.1%} of cross-source Dice loss inside the boundary floor "
+                  f"(CI [{lo:.1%}, {hi:.1%}])")
         supported = any(v["share_inside_floor"] > h3["share_threshold"] for v in summary.values()
                         if not np.isnan(v["share_inside_floor"]))
         summary["h3_supported"] = bool(supported)

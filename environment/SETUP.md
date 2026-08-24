@@ -63,8 +63,13 @@ ResEnc VRAM requirements per the
 M ≈ 9–11 GB, L ≈ 24 GB, XL ≈ 40 GB. PrimusV2 memory use must be measured on this data during
 week-one verification — the pairing above is a starting point, and the final matched pair is
 whatever fits the same ceiling. Record the actual patch size, token/patch-embedding
-resolution, parameter counts, and peak VRAM of both arms in the frozen config (token
-resolution is a pre-registered control).
+resolution, parameter counts, and peak VRAM of both arms with
+`scripts/training/record_arch_stats.py` (called at the end of `verify_pipeline.sh`), which
+writes them into `config/frozen_thresholds.yaml` and refuses to run twice. Token resolution is
+a pre-registered control: PrimusV2 tokenizes with an 8×8×8 voxel stride, so a lesion smaller
+than one token cannot be localized any finer than the token grid regardless of attention
+pattern — the script computes and freezes the token grid so this confound is checkable, not
+just asserted.
 
 ## 4. Disk
 
