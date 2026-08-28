@@ -147,8 +147,19 @@ def load_nnunet_network(checkpoint, dataset, configuration, plans, fold, trainer
     from nnunetv2.paths import nnUNet_preprocessed
     import json as _json
 
-    plans_path = Path(nnUNet_preprocessed) / f"Dataset{dataset}" / f"{plans}.json"
-    dataset_json_path = Path(nnUNet_preprocessed) / f"Dataset{dataset}" / "dataset.json"
+    # nnU-Net's directories are named Dataset<ID>_<Name> ("Dataset501_PDAC"), not Dataset<ID>,
+    # so resolve by ID prefix. --dataset also accepts the full folder name.
+    root = Path(nnUNet_preprocessed)
+    if (root / dataset).exists():
+        ds_dir = root / dataset
+    else:
+        matches = sorted(root.glob(f"Dataset{int(dataset):03d}_*"))
+        if not matches:
+            raise SystemExit(f"No preprocessed dataset for ID {dataset} under {root} "
+                             f"(found: {[p.name for p in root.iterdir() if p.is_dir()]})")
+        ds_dir = matches[0]
+    plans_path = ds_dir / f"{plans}.json"
+    dataset_json_path = ds_dir / "dataset.json"
     plans_manager = PlansManager(_json.load(open(plans_path)))
     dataset_json = _json.load(open(dataset_json_path))
     config_manager = plans_manager.get_configuration(configuration)

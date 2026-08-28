@@ -20,7 +20,6 @@ Usage:
       --pred-base-cnn DIR --pred-base-tf DIR --refs DIR
 """
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
@@ -64,7 +63,20 @@ def occlude_case(case_id, img_path, manual_path, out_dirs):
 def stage_occlude(args):
     cohort = pd.read_csv(args.cohort)
     cases = cohort[cohort["has_manual_lesion"]]
-    fold_map = pd.read_csv("splits/fold_assignment.csv")[["case_id", "fold"]]
+    fold_map = pd.read_csv(args.fold_assignment)[["case_id", "fold"]]
+
+    # --fold restricts the work to the cases one fold held out. Occluding the whole cohort in
+    # one place writes three copies of every image; restricting it to a fold lets each training
+    # run occlude and re-infer only its own held-out cases, which is both the correct pairing
+    # (the model never saw them) and the only version that fits a bounded disk budget.
+    if args.fold is not None:
+        keep = set(fold_map.loc[fold_map["fold"] == args.fold, "case_id"])
+        if not keep:
+            raise SystemExit(f"No cases held out by fold {args.fold} in {args.fold_assignment}")
+        cases = cases[cases["case_id"].isin(keep)]
+        fold_map = fold_map[fold_map["case_id"].isin(keep)]
+        print(f"fold {args.fold}: {len(cases)} held-out cases")
+
     out_dirs = []
     for lo, hi in SHELLS:
         d = args.workdir / "occluded" / f"shell_{lo}_{hi}" / "imagesTs"
@@ -73,10 +85,16 @@ def stage_occlude(args):
     n = 0
     for r in tqdm(cases.itertuples(), total=len(cases)):
         n += occlude_case(r.case_id, Path(r.path), Path(r.manual_label), out_dirs)
+    args.workdir.mkdir(parents=True, exist_ok=True)
     fold_map.to_csv(args.workdir / "case_fold_manifest.csv", index=False)
     print(f"Occluded {n} cases x {len(SHELLS)} shells under {args.workdir}/occluded/")
-    print("Now run nnUNetv2_predict per arm per shell dir with -f <fold holding the case out> "
-          "(see case_fold_manifest.csv), outputs to <workdir>/pred_<arm>/shell_<lo>_<hi>/")
+    if args.fold is None:
+        print("Now run nnUNetv2_predict per arm per shell dir with -f <fold holding the case "
+              "out> (see case_fold_manifest.csv), outputs to "
+              "<workdir>/pred_<arm>/shell_<lo>_<hi>/")
+    else:
+        print(f"Every case here was held out by fold {args.fold}, so one nnUNetv2_predict call "
+              f"per shell with -f {args.fold} covers them all.")
 
 
 def stage_score(args):
@@ -127,6 +145,9 @@ def main():
     ap.add_argument("--workdir", required=True, type=Path)
     ap.add_argument("--cohort", default="splits/cohort.csv", type=Path)
     ap.add_argument("--strata", default="splits/strata.csv", type=Path)
+    ap.add_argument("--fold-assignment", default="splits/fold_assignment.csv", type=Path)
+    ap.add_argument("--fold", type=int, default=None,
+                    help="occlude only the cases this fold held out (the per-run path)")
     ap.add_argument("--refs", type=Path)
     ap.add_argument("--pred-base-cnn", type=Path)
     ap.add_argument("--pred-base-tf", type=Path)

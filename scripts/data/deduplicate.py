@@ -6,8 +6,19 @@ leakage is exactly what the pre-registration excludes, so duplicates must be ide
 image content, not by case ID.
 
 Two-stage duplicate detection:
-  1. metadata fingerprint (voxel counts, spacing, origin, direction) — cheap, groups candidates
+  1. metadata fingerprint (voxel counts + spacing) — cheap, groups candidates
   2. full-array SHA-256 within candidate groups — decisive
+
+Stage 1 is deliberately coarse. It used to include origin and direction, which made it
+*formatting*-sensitive: SimpleITK returns direction cosines containing -0.0, `repr(-0.0)` is
+not `repr(0.0)`, and which of the two you get for a given axis varies with the writer and the
+library version. A scan and its redistributed copy could therefore land in different candidate
+groups, never be content-compared, and survive as a duplicate. That is data leakage across
+folds — exactly what the pre-registration excludes — traded for saving a few hashes.
+
+The asymmetry decides the design: over-grouping costs time, under-grouping costs correctness.
+So stage 1 keeps only what is exact (integer voxel counts) and near-exact (spacing, rounded
+and canonically formatted), and stage 2 decides.
 
 Outputs
   splits/cohort.csv       one row per retained case: case_id, patient_id, path, source,
@@ -21,33 +32,50 @@ import argparse
 import hashlib
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 from tqdm import tqdm
 
 IMG_EXT = (".mha", ".nii.gz", ".nrrd")
+DUPLICATE_COLUMNS = ["removed", "removed_path", "duplicate_of", "rule"]
 
 
 def find_images(root: Path):
     return sorted(p for p in root.rglob("*") if p.name.endswith(IMG_EXT))
 
 
+def _canon(value: float, decimals: int) -> str:
+    """Format a float so that equal numbers always give equal strings.
+
+    `repr()` does not: -0.0 and 0.0 are numerically equal but print differently, and header
+    round-trips flip the sign of zero components freely. Adding 0.0 normalizes -0.0 to 0.0,
+    and fixed-point formatting removes every other repr difference.
+    """
+    return f"{round(float(value), decimals) + 0.0:.{decimals}f}"
+
+
 def meta_fingerprint(path: Path) -> str:
     r = sitk.ImageFileReader()
     r.SetFileName(str(path))
     r.ReadImageInformation()
-    parts = (
-        tuple(r.GetSize()),
-        tuple(round(s, 4) for s in r.GetSpacing()),
-        tuple(round(o, 2) for o in r.GetOrigin()),
-        tuple(round(d, 4) for d in r.GetDirection()),
-    )
+    parts = (tuple(int(v) for v in r.GetSize()),
+             tuple(_canon(s, 4) for s in r.GetSpacing()))
     return hashlib.sha256(repr(parts).encode()).hexdigest()
 
 
 def content_hash(path: Path) -> str:
-    arr = sitk.GetArrayViewFromImage(sitk.ReadImage(str(path)))
-    return hashlib.sha256(arr.tobytes()).hexdigest()
+    """Decisive comparison: the voxel data itself, with the dtype folded in.
+
+    Two files holding the same scan at different dtypes are not the exact duplicates this
+    script removes, and silently merging them would hide a real difference, so the dtype is
+    part of the identity rather than something to normalize away.
+    """
+    arr = np.ascontiguousarray(sitk.GetArrayViewFromImage(sitk.ReadImage(str(path))))
+    h = hashlib.sha256()
+    h.update(str(arr.dtype).encode())
+    h.update(arr.tobytes())
+    return h.hexdigest()
 
 
 def case_id_from_path(path: Path) -> str:
@@ -79,23 +107,39 @@ def main():
         rows.append({"path": str(p), "case_id": case_id_from_path(p), "meta_fp": meta_fingerprint(p)})
     df = pd.DataFrame(rows)
 
-    # Stage 2: content hash only where metadata collides
+    # Stage 2: content hash only where the metadata already matches
     dupes = []
     keep = set(df.index)
+    n_groups = n_hashed = 0
     for _, group in df.groupby("meta_fp"):
         if len(group) < 2:
             continue
+        n_groups += 1
         hashes = {}
         for idx in group.index:
+            n_hashed += 1
             h = content_hash(Path(df.loc[idx, "path"]))
             if h in hashes:
                 dupes.append({"removed": df.loc[idx, "case_id"], "removed_path": df.loc[idx, "path"],
-                              "duplicate_of": df.loc[hashes[h], "case_id"]})
+                              "duplicate_of": df.loc[hashes[h], "case_id"],
+                              "rule": "identical voxel data and dtype within a "
+                                      "size+spacing candidate group"})
                 keep.discard(idx)
             else:
                 hashes[h] = idx
+    singletons = int((df.groupby("meta_fp")["path"].transform("size") == 1).sum())
     df = df.loc[sorted(keep)].drop(columns="meta_fp")
+
+    # Stage 1 is a filter, so its selectivity is worth stating: if it grouped almost nothing,
+    # stage 2 never got the chance to decide and "no duplicates" means "nothing was compared".
+    print(f"Stage 1: {n_groups} candidate group(s) covering {n_hashed} scans; "
+          f"{singletons} scans had a unique size+spacing and were not compared")
     print(f"Removed {len(dupes)} exact duplicates; {len(df)} scans retained")
+    if n_hashed == 0:
+        print("WARNING: no two scans shared a size and spacing, so no content comparison "
+              "happened at all. On a cohort that redistributes MSD Task07 and NIH "
+              "Pancreas-CT inside PANORAMA that is not plausible — check the inputs before "
+              "trusting a zero-duplicate result.")
 
     # Merge clinical metadata (source, diagnosis). Column names are verified at freeze time;
     # fail loudly rather than guess silently.
@@ -128,7 +172,11 @@ def main():
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out, index=False)
-    pd.DataFrame(dupes).to_csv(args.out.parent / "duplicates.csv", index=False)
+    # Always with a header, even when nothing was removed: a zero-duplicate cohort is a
+    # perfectly good outcome, and pandas cannot read back a file with no columns at all, so
+    # writing a bare empty file turns a clean result into a crash for every reader downstream.
+    pd.DataFrame(dupes, columns=DUPLICATE_COLUMNS).to_csv(
+        args.out.parent / "duplicates.csv", index=False)
     print(f"Wrote {args.out} ({len(df)} rows, {df['has_manual_lesion'].sum()} with manual lesion labels)")
     print("NEXT: verify source / diagnosis columns, then run compute_strata.py")
 

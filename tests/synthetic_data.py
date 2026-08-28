@@ -9,8 +9,14 @@ or running a GPU training job. Mirrors the real layout exactly:
   data_root/panorama/panorama_labels/automatic_labels/<case_id>.nii.gz (labels 2-6, all cases)
   data_root/panorama/panorama_labels/clinical_information.xlsx
 
-Also writes one exact-content duplicate case (mimicking MSD/NIH cases redistributed inside
-PANORAMA) so deduplicate.py's content-hash stage has something real to catch.
+Also writes two exact-content duplicate cases, mimicking MSD/NIH scans redistributed inside
+PANORAMA, so deduplicate.py has something real to catch:
+
+  - one plain copy, and
+  - one whose header carries the sign-of-zero jitter a writer round-trip introduces. That
+    second one is the regression: the original metadata fingerprint hashed `repr()` of the
+    direction cosines, and `repr(-0.0) != repr(0.0)`, so a copy like this landed in a
+    different candidate group, was never content-compared, and survived as a duplicate.
 """
 from pathlib import Path
 
@@ -98,14 +104,19 @@ def generate(data_root: Path, n_patients=30, seed=20260823):
         _make_case(img_dir, manual_dir, auto_dir, case_id, 0, 0, seed=2000 + k)
         info_rows.append({"case_id": case_id, "source": "NIH"})
 
-    # One exact-content duplicate, no manual label (as if redistributed under another ID)
+    # Two exact-content duplicates, no manual label (as if redistributed under another ID).
     dup_src = info_rows[0]["case_id"]
-    dup_id = "999001_00001"
-    sitk.WriteImage(sitk.ReadImage(str(img_dir / f"{dup_src}_0000.nii.gz")),
-                    str(img_dir / f"{dup_id}_0000.nii.gz"), useCompression=True)
-    sitk.WriteImage(sitk.ReadImage(str(auto_dir / f"{dup_src}.nii.gz")),
-                    str(auto_dir / f"{dup_id}.nii.gz"), useCompression=True)
-    info_rows.append({"case_id": dup_id, "source": "MSKCC"})
+    for dup_id, jitter_header in (("999001_00001", False), ("999002_00001", True)):
+        img = sitk.ReadImage(str(img_dir / f"{dup_src}_0000.nii.gz"))
+        if jitter_header:
+            # Same voxels, cosmetically different header: flip the sign of every zero
+            # component. Numerically identical, textually not.
+            img.SetDirection(tuple(-0.0 if v == 0.0 else v for v in img.GetDirection()))
+            img.SetOrigin(tuple(-0.0 if v == 0.0 else v for v in img.GetOrigin()))
+        sitk.WriteImage(img, str(img_dir / f"{dup_id}_0000.nii.gz"), useCompression=True)
+        sitk.WriteImage(sitk.ReadImage(str(auto_dir / f"{dup_src}.nii.gz")),
+                        str(auto_dir / f"{dup_id}.nii.gz"), useCompression=True)
+        info_rows.append({"case_id": dup_id, "source": "MSKCC"})
 
     pd.DataFrame(info_rows).rename(columns={"case_id": "Case ID", "source": "Source"}).to_excel(
         labels_root / "clinical_information.xlsx", index=False)
@@ -153,3 +164,83 @@ def make_predictions(cohort_csv: Path, manual_dir: Path, out_dir: Path, seed=42)
             sitk.WriteImage(out_img, str(d / f"{cid}.nii.gz"), useCompression=True)
 
     return refs_dir, cnn_dir, tf_dir
+
+
+def _degrade(arr, iterations, rng, flip_p=0.0005):
+    """Erode a mask by `iterations` and add a little speckle, the same way make_predictions
+    builds its designed patterns — so every synthetic prediction set in the tests is produced
+    by one mechanism with one knob."""
+    out = ndimage.binary_erosion(arr, iterations=iterations).astype(np.uint8) if iterations else arr.copy()
+    flip = rng.random(out.shape) < flip_p
+    out[flip] = 1 - out[flip]
+    return out.astype(np.uint8)
+
+
+def _write_like(arr, ref_img, path):
+    img = sitk.GetImageFromArray(arr)
+    img.CopyInformation(ref_img)
+    sitk.WriteImage(img, str(path), useCompression=True)
+
+
+def make_identity_predictions(tf_dir: Path, out_dir: Path, extra_erosion=0):
+    """H2b identity-control predictions, derived from the transformer arm's own predictions so
+    the two fixtures differ in exactly one way.
+
+    extra_erosion=0 copies them: every per-case difference is exactly zero, so the stratified
+    map is trivially the same map and identity_comparison.py must read "attention is not the
+    cause". extra_erosion>0 erodes every prediction instead, degrading every cell, and the same
+    script must read the opposite. Both branches are exercised, so a hard-wired verdict fails.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for f in sorted(tf_dir.glob("*.nii.gz")):
+        img = sitk.ReadImage(str(f))
+        arr = sitk.GetArrayFromImage(img).astype(np.uint8)
+        if extra_erosion:
+            arr = ndimage.binary_erosion(arr, iterations=extra_erosion).astype(np.uint8)
+        _write_like(arr, img, out_dir / f.name)
+    return out_dir
+
+
+def make_loso_predictions(cohort_csv: Path, manual_dir: Path, out_dir: Path,
+                          source_col="source", seed=11):
+    """Leave-one-source-out predictions laid out as loso_analysis.py expects:
+    <out_dir>/<arm>/loso_<Source>/<case>.nii.gz. Designed pattern: the transformer degrades
+    much more under source shift than the CNN, so the H3 share-inside-floor statistic has a
+    real contrast to find."""
+    cohort = pd.read_csv(cohort_csv)
+    manual = cohort[cohort["has_manual_lesion"]]
+    rng = np.random.default_rng(seed)
+    extra = {"cnn": 1, "tf": 3}      # extra erosion iterations under source shift
+    for arm, it in extra.items():
+        for source, g in manual.groupby(source_col):
+            d = out_dir / arm / f"loso_{source}"
+            d.mkdir(parents=True, exist_ok=True)
+            for cid in g["case_id"]:
+                seg = sitk.ReadImage(str(manual_dir / f"{cid}.nii.gz"))
+                arr = (sitk.GetArrayFromImage(seg) == 1).astype(np.uint8)
+                vol = arr.sum()
+                base = ({"cnn": 0, "tf": 2} if vol < 300 else
+                        {"cnn": 1, "tf": 1} if vol < 1500 else {"cnn": 3, "tf": 0})[arm]
+                _write_like(_degrade(arr, base + it, rng), seg, d / f"{cid}.nii.gz")
+    return out_dir
+
+
+def make_seed_predictions(fold_assignment_csv: Path, manual_dir: Path, out_dir: Path,
+                          fold=0, seeds=(1, 2), base_seed=23):
+    """Seed replicates on one fold: the same designed CNN pattern, re-speckled per seed, so
+    the only variation across seeds is initialization-like noise. Returns {seed: dir}."""
+    fa = pd.read_csv(fold_assignment_csv)
+    cases = fa.loc[fa["fold"] == fold, "case_id"].tolist()
+    dirs = {}
+    for s in seeds:
+        d = out_dir / f"seed{s}"
+        d.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(base_seed + int(s))
+        for cid in cases:
+            seg = sitk.ReadImage(str(manual_dir / f"{cid}.nii.gz"))
+            arr = (sitk.GetArrayFromImage(seg) == 1).astype(np.uint8)
+            vol = arr.sum()
+            cnn_iter = 0 if vol < 300 else (1 if vol < 1500 else 3)
+            _write_like(_degrade(arr, cnn_iter, rng, flip_p=0.0008), seg, d / f"{cid}.nii.gz")
+        dirs[s] = d
+    return dirs
