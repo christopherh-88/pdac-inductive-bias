@@ -66,6 +66,17 @@ check_time("after smoke test")
 SUBSET = True     # batch 1 only. Set False only where ~400 GB of disk actually exists.
 BATCHES = ["batch_1"] if SUBSET else ["batch_1", "batch_2", "batch_3", "batch_4"]
 
+# Each Zenodo batch is a single ~50 GB zip (batch 1 is 49.3 GB), and the images inside are
+# already compressed, so extracting one costs about as much again. A Kaggle session has tens
+# of GB, not hundreds: downloading a batch AND extracting all of it does not fit, whatever the
+# session time budget says.
+#
+# MAX_CASES extracts only the first N patients out of the archive. The download is still the
+# full batch — a zip cannot be fetched selectively — but the extraction is bounded, so the
+# peak is one zip plus a small subset instead of one zip plus another whole batch.
+MAX_CASES = 60      # None extracts the whole batch; only sensible off Kaggle
+ASSUMED_BATCH_GB = 50.0
+
 # If PANORAMA is already attached as a dataset, use it and skip the download entirely.
 # That is the intended path once you have the data once: uploading it as a dataset is not
 # subject to the 20 GB output cap.
@@ -80,22 +91,49 @@ print(f"free scratch: {shutil.disk_usage(SCRATCH).free/1e9:.0f} GB")
     code("""
 # --- download ---------------------------------------------------------------------------
 # zenodo_get resolves each record, downloads every file, and verifies md5 checksums.
+# One batch at a time, and each zip is deleted as soon as it has been extracted: holding two
+# batches at once is what actually runs the disk out.
+IMG_DIR = DATA_ROOT / "panorama" / "images"
+
+def _free_gb():
+    return shutil.disk_usage(SCRATCH).free / 1e9
+
 if not attached:
-    (DATA_ROOT / "panorama" / "images").mkdir(parents=True, exist_ok=True)
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
     zips = DATA_ROOT / "panorama" / "zips"
     RECORDS = {"batch_1": 13715870, "batch_2": 13742336, "batch_3": 11034011, "batch_4": 10999754}
+
+    # Preflight: one zip has to fit, plus whatever is being kept. Finding this out after a
+    # 50 GB download costs the session.
+    need = ASSUMED_BATCH_GB * (1 if MAX_CASES else len(BATCHES) + 1) + 5
+    print(f"free scratch {_free_gb():.0f} GB; this needs about {need:.0f} GB")
+    if _free_gb() < need:
+        raise RuntimeError(
+            f"Not enough scratch: {_free_gb():.0f} GB free, about {need:.0f} GB needed.\\n"
+            "A Zenodo batch is ~50 GB zipped and costs about as much again to extract, which "
+            "does not fit a Kaggle session however the time budget looks. Either lower "
+            "MAX_CASES, or — the route that actually scales — stage the data once from a "
+            "machine with disk as a Kaggle Dataset and attach it. An attached dataset is not "
+            "subject to the 20 GB output cap and needs no download here at all.")
+
     for b in BATCHES:
         d = zips / b
-        if (d / ".done").exists():
-            print(f"{b} already downloaded"); continue
+        if (d / ".extracted").exists():
+            print(f"{b} already extracted"); continue
         d.mkdir(parents=True, exist_ok=True)
-        sh(f"zenodo_get -o {d} {RECORDS[b]}")
-        (d / ".done").touch()
-        check_time(f"after {b}")
-    for b in BATCHES:
-        for z in sorted((zips / b).glob("*.zip")):
-            sh(f"unzip -n -q {z} -d {DATA_ROOT / 'panorama' / 'images'}")
-    # The zips are dead weight once extracted, and scratch is finite too.
+        if not (d / ".done").exists():
+            sh(f"zenodo_get -o {d} {RECORDS[b]}")
+            (d / ".done").touch()
+            check_time(f"after downloading {b}")
+        for z in sorted(d.glob("*.zip")):
+            # Selection lives in scripts/download/extract_subset.py so it is testable and
+            # usable off Kaggle, rather than being logic that only exists inside a notebook.
+            sh(f"{sys.executable} scripts/download/extract_subset.py --zip {z} "
+               f"--dest {IMG_DIR}" + (f" --max-cases {MAX_CASES}" if MAX_CASES else ""))
+            z.unlink()          # before the next batch, not after all of them
+        (d / ".extracted").touch()
+        print(f"{b} done; free scratch now {_free_gb():.0f} GB")
+        check_time(f"after extracting {b}")
     shutil.rmtree(zips, ignore_errors=True)
 
     labels = DATA_ROOT / "panorama" / "panorama_labels"

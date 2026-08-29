@@ -65,16 +65,24 @@ def meta_fingerprint(path: Path) -> str:
 
 
 def content_hash(path: Path) -> str:
-    """Decisive comparison: the voxel data itself, with the dtype folded in.
+    """Decisive comparison: the voxel VALUES, not the bytes that happen to encode them.
 
-    Two files holding the same scan at different dtypes are not the exact duplicates this
-    script removes, and silently merging them would hide a real difference, so the dtype is
-    part of the identity rather than something to normalize away.
+    Hashing raw bytes makes the answer depend on storage dtype, and a redistributed scan is
+    frequently re-encoded on the way — int16 to float32, or promoted by a reader on one
+    platform and not another. Those files hold the same scan; calling them distinct is exactly
+    the miss that lets a duplicate through into a different fold.
+
+    So values are canonicalized to float64 before hashing. That is exact for every dtype CT
+    data realistically uses (int16, uint16, int32, float32), and it makes the hash a property
+    of the image rather than of the writer. Hashing proceeds in chunks so a large volume costs
+    bounded memory rather than 8 bytes per voxel all at once.
     """
-    arr = np.ascontiguousarray(sitk.GetArrayViewFromImage(sitk.ReadImage(str(path))))
+    arr = sitk.GetArrayViewFromImage(sitk.ReadImage(str(path)))
+    flat = np.ascontiguousarray(arr).reshape(-1)
     h = hashlib.sha256()
-    h.update(str(arr.dtype).encode())
-    h.update(arr.tobytes())
+    h.update(repr(arr.shape).encode())          # same values, different shape => not the same
+    for start in range(0, flat.size, 8_000_000):
+        h.update(flat[start:start + 8_000_000].astype(np.float64, copy=False).tobytes())
     return h.hexdigest()
 
 

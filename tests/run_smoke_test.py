@@ -68,6 +68,25 @@ def main():
         sd.generate(data_root, n_patients=30)
         check("synthetic images written", (data_root / "panorama" / "images").glob("*_0000.nii.gz").__next__() is not None)
 
+        # Verify the fixture is what it claims to be, BEFORE any code under test looks at it.
+        # A previous version built its "duplicates" by round-tripping an image through
+        # SimpleITK, assuming that preserves voxel data. On some platforms it does not — so
+        # the duplicates were not duplicates, and dedup got blamed for correctly declining to
+        # merge two different images. A fixture that depends on library behaviour varying by
+        # platform tests the platform, not the code.
+        import SimpleITK as _sitk
+        _img = data_root / "panorama" / "images"
+        _src = _img / "100000_00001_0000.nii.gz"
+        check("fixture: the plain duplicate is byte-identical to its source",
+              (_img / "999001_00001_0000.nii.gz").read_bytes() == _src.read_bytes())
+        _a = _sitk.GetArrayFromImage(_sitk.ReadImage(str(_src)))
+        _b = _sitk.GetArrayFromImage(_sitk.ReadImage(str(_img / "999002_00001_0000.nii.gz")))
+        check("fixture: the re-encoded duplicate holds identical values at a different dtype",
+              _a.shape == _b.shape and np.array_equal(_a.astype(np.float64),
+                                                      _b.astype(np.float64))
+              and _a.dtype != _b.dtype,
+              f"{_a.dtype} vs {_b.dtype}, equal={np.array_equal(_a.astype(np.float64), _b.astype(np.float64))}")
+
         print("\n== deduplicate.py ==")
         r = run(["scripts/data/deduplicate.py", "--data-root", str(data_root),
                 "--out", "splits/cohort.csv"], cwd=repo)
@@ -79,9 +98,9 @@ def main():
         check("both duplicates are named in duplicates.csv with the rule that removed them",
               len(dupes_csv) == 2 and "rule" in dupes_csv.columns,
               f"got {len(dupes_csv)} rows: {list(dupes_csv.columns)}")
-        check("the header-jittered duplicate is caught, not just the plain copy "
-              "(regression: repr(-0.0) != repr(0.0) once split them into different "
-              "candidate groups, so they were never content-compared)",
+        check("both the byte-identical copy and the re-encoded copy are caught "
+              "(a redistributed scan is often stored at a different dtype, and a byte-level "
+              "hash calls that a different image)",
               set(dupes_csv["removed"]) == {"999001_00001", "999002_00001"},
               f"removed: {sorted(dupes_csv['removed'])}")
 
@@ -112,6 +131,18 @@ def main():
               f"got {sorted(strata['volume_mm3'].unique())}")
         check("volume tertiles assigned 0/1/2 in equal thirds",
               (strata["volume_tertile"].value_counts() == 10).all())
+        # The distance map is computed once and thresholded per ring width. The failure mode
+        # of that optimization is computing one ring three times, which would look perfectly
+        # healthy in every downstream table.
+        cnr_cols = [f"cnr_ring{w}mm" for w in (5, 10, 15)]
+        check("all three ring widths are present and finite", 
+              all(c in strata.columns for c in cnr_cols)
+              and strata[cnr_cols].notna().all().all(), str(list(strata.columns)))
+        differing = (strata[cnr_cols].nunique(axis=1) > 1).sum()
+        check("the three ring widths give genuinely different CNRs (one distance map, three "
+              "thresholds — not the same ring computed three times)",
+              differing >= len(strata) * 0.5,
+              f"only {differing}/{len(strata)} cases differ across ring widths")
         frozen = yaml.safe_load(open(repo / "config" / "frozen_thresholds.yaml"))
         check("frozen_thresholds.yaml strata section written", "strata" in frozen)
 
@@ -636,7 +667,44 @@ def main():
         check("per-fold occlusion is a strict subset of the whole-cohort run",
               0 < len(got) < len(occ_files))
 
-        # 19. Custom trainers, against a stubbed nnU-Net ----------------------------------
+        # 19. Subset extraction from a batch zip ------------------------------------------
+        print("\n== extract_subset.py ==")
+        import zipfile
+        zip_path = tmp / "fake_batch.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for pid in range(10):
+                for study in (1, 2):        # two scans per patient
+                    zf.writestr(f"batch_1/{100000 + pid}_0000{study}_0000.nii.gz",
+                                b"not-a-real-volume")
+            zf.writestr("batch_1/README.txt", b"ignored: not an image")
+
+        sys.path.insert(0, str(repo / "scripts" / "download"))
+        import extract_subset as xs
+        importlib.reload(xs)
+        entries, patients = xs.select_entries(zip_path, max_cases=3)
+        check("subset selection takes whole patients, not loose files",
+              len(patients) == 3 and len(entries) == 6,
+              f"{len(patients)} patients / {len(entries)} entries")
+        check("subset selection is deterministic and sorted, so re-running extends rather "
+              "than reshuffles the cohort",
+              patients == ["100000", "100001", "100002"], str(patients))
+        check("non-image entries are never selected",
+              all(e.endswith(".nii.gz") for e in entries))
+        _, all_patients = xs.select_entries(zip_path, max_cases=None)
+        check("no cap selects every patient", len(all_patients) == 10, str(len(all_patients)))
+        _, capped = xs.select_entries(zip_path, max_cases=999)
+        check("a cap larger than the archive is not an error", len(capped) == 10)
+
+        dest = tmp / "extracted"
+        got = xs.extract(zip_path, dest, max_cases=3)
+        files = sorted(p.name for p in dest.rglob("*.nii.gz"))
+        check("extraction writes exactly the selected patients' files",
+              len(files) == 6 and {f.split("_")[0] for f in files} == set(got),
+              f"{files}")
+        check("nothing outside the selection is unpacked",
+              not list(dest.rglob("README.txt")))
+
+        # 20. Custom trainers, against a stubbed nnU-Net ----------------------------------
         print("\n== trainers (stubbed nnU-Net) ==")
         r = run(["tests/test_trainers.py"], cwd=REPO)
         n_trainer_checks = r.stdout.count("  PASS  ")
@@ -644,7 +712,7 @@ def main():
               r.returncode == 0 and n_trainer_checks >= 18,
               f"{n_trainer_checks} passed; {r.stdout[-1200:]}")
 
-        # 20. Generated Kaggle notebooks --------------------------------------------------
+        # 21. Generated Kaggle notebooks --------------------------------------------------
         print("\n== notebooks ==")
         nb_dir = REPO / "notebooks"
         nbs = sorted(nb_dir.glob("*.ipynb"))

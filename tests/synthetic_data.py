@@ -9,15 +9,21 @@ or running a GPU training job. Mirrors the real layout exactly:
   data_root/panorama/panorama_labels/automatic_labels/<case_id>.nii.gz (labels 2-6, all cases)
   data_root/panorama/panorama_labels/clinical_information.xlsx
 
-Also writes two exact-content duplicate cases, mimicking MSD/NIH scans redistributed inside
-PANORAMA, so deduplicate.py has something real to catch:
+Also writes two duplicate cases, mimicking MSD/NIH scans redistributed inside PANORAMA, so
+deduplicate.py has something real to catch:
 
-  - one plain copy, and
-  - one whose header carries the sign-of-zero jitter a writer round-trip introduces. That
-    second one is the regression: the original metadata fingerprint hashed `repr()` of the
-    direction cosines, and `repr(-0.0) != repr(0.0)`, so a copy like this landed in a
-    different candidate group, was never content-compared, and survived as a duplicate.
+  - a byte-for-byte file copy, and
+  - a re-encoded copy holding the same values at a different dtype.
+
+Both are made with `shutil.copy` or an explicit dtype cast rather than by round-tripping the
+image through SimpleITK. An earlier version did round-trip it, on the assumption that
+ReadImage -> WriteImage preserves voxel data. It does on some platforms and not others: on
+Kaggle the round-trip changed the data, so the "duplicate" was not one, and the test failed
+for a reason that had nothing to do with the code under test. A fixture must not depend on
+library behaviour that varies by platform — that is the thing it is supposed to be testing
+around.
 """
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -104,19 +110,25 @@ def generate(data_root: Path, n_patients=30, seed=20260823):
         _make_case(img_dir, manual_dir, auto_dir, case_id, 0, 0, seed=2000 + k)
         info_rows.append({"case_id": case_id, "source": "NIH"})
 
-    # Two exact-content duplicates, no manual label (as if redistributed under another ID).
+    # Two duplicates, no manual label (as if redistributed under another ID).
     dup_src = info_rows[0]["case_id"]
-    for dup_id, jitter_header in (("999001_00001", False), ("999002_00001", True)):
-        img = sitk.ReadImage(str(img_dir / f"{dup_src}_0000.nii.gz"))
-        if jitter_header:
-            # Same voxels, cosmetically different header: flip the sign of every zero
-            # component. Numerically identical, textually not.
-            img.SetDirection(tuple(-0.0 if v == 0.0 else v for v in img.GetDirection()))
-            img.SetOrigin(tuple(-0.0 if v == 0.0 else v for v in img.GetOrigin()))
-        sitk.WriteImage(img, str(img_dir / f"{dup_id}_0000.nii.gz"), useCompression=True)
-        sitk.WriteImage(sitk.ReadImage(str(auto_dir / f"{dup_src}.nii.gz")),
-                        str(auto_dir / f"{dup_id}.nii.gz"), useCompression=True)
-        info_rows.append({"case_id": dup_id, "source": "MSKCC"})
+    src_img = img_dir / f"{dup_src}_0000.nii.gz"
+    src_auto = auto_dir / f"{dup_src}.nii.gz"
+
+    # (a) A byte-for-byte copy. Unambiguously a duplicate on every platform.
+    shutil.copy(src_img, img_dir / "999001_00001_0000.nii.gz")
+    shutil.copy(src_auto, auto_dir / "999001_00001.nii.gz")
+    info_rows.append({"case_id": "999001_00001", "source": "MSKCC"})
+
+    # (b) A re-encoded copy: same values, stored as float64 instead of float32. This is what a
+    # redistribution actually looks like, and it is the case a byte-level hash misses.
+    reencoded = sitk.ReadImage(str(src_img))
+    arr64 = sitk.GetArrayFromImage(reencoded).astype(np.float64)
+    out = sitk.GetImageFromArray(arr64)
+    out.CopyInformation(reencoded)
+    sitk.WriteImage(out, str(img_dir / "999002_00001_0000.nii.gz"), useCompression=True)
+    shutil.copy(src_auto, auto_dir / "999002_00001.nii.gz")
+    info_rows.append({"case_id": "999002_00001", "source": "MSKCC"})
 
     pd.DataFrame(info_rows).rename(columns={"case_id": "Case ID", "source": "Source"}).to_excel(
         labels_root / "clinical_information.xlsx", index=False)
@@ -193,10 +205,15 @@ def make_identity_predictions(tf_dir: Path, out_dir: Path, extra_erosion=0):
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     for f in sorted(tf_dir.glob("*.nii.gz")):
+        if not extra_erosion:
+            # A byte copy, not a SimpleITK round-trip: the "reproduced" fixture asserts an
+            # exactly zero paired difference, and a round-trip is not guaranteed to preserve
+            # data on every platform. Same reason the duplicate fixtures are file copies.
+            shutil.copy(f, out_dir / f.name)
+            continue
         img = sitk.ReadImage(str(f))
         arr = sitk.GetArrayFromImage(img).astype(np.uint8)
-        if extra_erosion:
-            arr = ndimage.binary_erosion(arr, iterations=extra_erosion).astype(np.uint8)
+        arr = ndimage.binary_erosion(arr, iterations=extra_erosion).astype(np.uint8)
         _write_like(arr, img, out_dir / f.name)
     return out_dir
 
