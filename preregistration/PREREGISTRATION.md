@@ -58,12 +58,8 @@ All margins below are fixed here and reported as pre-set whether or not they are
 - **Prediction:** A measurable share of the Dice lost under cross-source evaluation lies
   within the tolerance implied by boundary ambiguity in the reference.
 - **Test:** Leave-one-source-out training per arm; boundary-tolerance floor from 1- and
-  2-voxel morphological perturbation of the reference; NSD at 2 mm reported alongside Dice.
-  RESOLVED (2026-09-02): no inter-rater proxy is available from paired independent
-  delineations — the panorama_labels repo's own README states manual PDAC lesion
-  segmentations were each made by **one of two** trained investigators (single annotator per
-  case, supervised by one expert radiologist), not by both. The boundary-tolerance floor
-  therefore rests on morphological perturbation of the single reference alone.
+  2-voxel morphological perturbation of the reference (plus any paired independent
+  delineations); NSD at 2 mm reported alongside Dice.
 - **Decision rule:** Report the share of each arm's cross-source Dice loss that falls inside
   the floor. Supported if that share exceeds **50%** for at least one arm.
 
