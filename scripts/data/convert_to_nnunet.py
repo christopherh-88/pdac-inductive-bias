@@ -26,11 +26,20 @@ CFG = yaml.safe_load(open(Path(__file__).parents[2] / "config" / "analysis_confi
 LESION = CFG["labels"]["panorama"]["pdac_lesion"]
 
 
-def write_binary_lesion_label(src: str, dst: Path):
+def write_binary_lesion_label(src: str, dst: Path, img: sitk.Image):
     seg = sitk.ReadImage(src)
-    arr = (sitk.GetArrayViewFromImage(seg) == LESION).astype(np.uint8)
+    # nnU-Net's verify_dataset_integrity requires the label to share the image's exact
+    # geometry. Real PANORAMA cases can differ here -- confirmed in practice: both a tiny
+    # float-precision spacing mismatch (a re-serialization rounding artifact) and a genuine
+    # one (8.0mm vs ~4.8mm z-spacing for a case whose manual label came from a differently
+    # reconstructed series of the same study). Resample onto the image's own grid rather than
+    # assume they already match.
+    if (seg.GetSize() != img.GetSize() or seg.GetSpacing() != img.GetSpacing()
+            or seg.GetDirection() != img.GetDirection() or seg.GetOrigin() != img.GetOrigin()):
+        seg = sitk.Resample(seg, img, sitk.Transform(), sitk.sitkNearestNeighbor, 0, seg.GetPixelID())
+    arr = (sitk.GetArrayFromImage(seg) == LESION).astype(np.uint8)
     out = sitk.GetImageFromArray(arr)
-    out.CopyInformation(seg)
+    out.CopyInformation(img)
     sitk.WriteImage(out, str(dst), useCompression=True)
 
 
@@ -46,7 +55,7 @@ def build(dataset_dir: Path, rows, desc: str):
             else:  # convert .mha etc. to nii.gz
                 sitk.WriteImage(sitk.ReadImage(r.path), str(img_dst), useCompression=True)
         if not lab_dst.exists():
-            write_binary_lesion_label(r.label_src, lab_dst)
+            write_binary_lesion_label(r.label_src, lab_dst, sitk.ReadImage(str(img_dst)))
     dataset_json = {
         "channel_names": {"0": "CT"},
         "labels": {"background": 0, "pdac_lesion": 1},
