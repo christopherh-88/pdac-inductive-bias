@@ -137,7 +137,12 @@ back down.
   two study IDs. One was dropped (`splits/duplicates.csv`), so the deduplicated cohort has 2,237
   scans, 675 PDAC (481 manual delineations), and MSD Task07 has 97 unique PDAC cases, not the
   194/98 nominal counts above. `splits/cohort.csv`, `splits/strata.csv`, and
-  `splits/splits_final.json` are frozen from this deduplicated cohort.
+  `splits/splits_final.json` are frozen from this deduplicated cohort. Of the 481 manual
+  delineations, 3 (`100598_00001`, `100667_00001`, `101632_00001`) delineate a non-PDAC finding,
+  not a PDAC lesion — correctly excluded from `strata.csv`/`splits_final.json` per
+  pre-registration section 4 ("non-PDAC masses excluded from all PDAC analyses"), so the working
+  PDAC-lesion analysis cohort is **478** cases, not 481; see
+  `preregistration/DEVIATIONS.md` for the reconciliation.
 - PrimusV2 preset (S/B/M/L) and ResEnc preset (M/L/XL) are chosen together once GPU VRAM is
   confirmed, to satisfy the matched-budget control; recorded in the frozen config.
 - RESOLVED (2026-08-23): nnU-Net master now also ships `nnUNet_PrimusV3S_Trainer` and

@@ -45,3 +45,24 @@ Both `peak_vram_gb` figures (CNN 7.149 GB, transformer 6.341 GB) and the transfo
 `n_tokens` = 3,840 (token grid 8×24×20) are real measurements from that kernel run and are not
 placeholders — they are simply from a 10-iteration smoke run on 8 cases on a P100, not the real
 compute tier, and are recorded as such.
+
+## 481 manual delineations vs. 478-case working strata/split cohort (2026-09-02)
+
+`splits/cohort.csv` flags 481 cases `has_manual_lesion=True` (matching README's stated count),
+but `splits/strata.csv` and `config/frozen_thresholds.yaml`'s `strata.n_cases`/`splits.n_cases`
+both report **478**. This is not a bug: 3 of the 481 (`100598_00001`, `100667_00001`,
+`101632_00001`) are non-PDAC cases (`is_pdac=False`, `label=non-PDAC` in `clinical_information.xlsx`)
+whose manual label file delineates that non-PDAC finding rather than a PDAC lesion, so they
+contain zero voxels matching the PDAC lesion label. Section 4 of the pre-registration already
+requires "non-PDAC masses excluded from all PDAC analyses" — these 3 are that exclusion working
+as intended, not a data-loss bug.
+
+The exclusion previously happened silently: `kaggle_stream_cohort.py`'s streaming lesion-stats
+computation writes no `lesion_stats_raw.csv` row at all when a case's manual label has zero
+PDAC-lesion voxels, and `scripts/data/finalize_strata_from_stream.py` only logged rows dropped
+as cross-batch duplicates, not cases present in `cohort.csv` but absent from the raw lesion
+stats. `finalize_strata_from_stream.py` now detects and prints this reconciliation explicitly
+(`kept_ids - set(raw.case_id)`), matching the equivalent warning
+`scripts/analysis/compute_strata.py` already gave for its non-streaming path. The frozen
+`n_cases: 478` in `config/frozen_thresholds.yaml` was already computed correctly before this
+fix — the fix adds visibility, it does not change the frozen numbers.

@@ -336,8 +336,8 @@ def step3_build_dataset(kept):
         # artifact) AND a genuine one (8.0mm vs ~4.8mm z-spacing for a different case, likely
         # the manual label coming from a differently-reconstructed series of the same study).
         # Resampling onto the image's own grid resolves both uniformly rather than assuming
-        # they already match (scripts/data/convert_to_nnunet.py has this same latent gap via
-        # plain CopyInformation -- worth fixing there too, separately from this verification run).
+        # they already match (scripts/data/convert_to_nnunet.py's write_binary_lesion_label
+        # applies the identical resample-before-CopyInformation fix).
         if (seg.GetSize() != img.GetSize() or seg.GetSpacing() != img.GetSpacing()
                 or seg.GetDirection() != img.GetDirection() or seg.GetOrigin() != img.GetOrigin()):
             log(f"  resampling label for {cid} onto image grid (geometry mismatch)")

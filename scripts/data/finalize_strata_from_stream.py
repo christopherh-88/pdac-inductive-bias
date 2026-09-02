@@ -44,6 +44,21 @@ def main():
         print(f"Dropped {n_dropped_as_dupe} lesion_stats rows for cases removed as cross-batch "
               f"duplicates in {args.cohort}")
 
+    # kaggle_stream_cohort.py's process_case() writes no lesion_stats row at all when
+    # lesion_stats() finds zero voxels matching the PDAC lesion label (e.g. a manual label file
+    # that delineates a non-PDAC finding instead) -- unlike scripts/analysis/compute_strata.py's
+    # equivalent local path, which prints an explicit "dropped from strata.csv: [ids]" warning.
+    # Reproduce that same visibility here so a has_manual_lesion case missing from strata.csv is
+    # never a silent gap.
+    missing_ids = kept_ids - set(raw["case_id"].astype(str))
+    if missing_ids:
+        reasons = cohort.loc[cohort["case_id"].astype(str).isin(missing_ids),
+                              ["case_id", "is_pdac", "label"]]
+        print(f"WARNING: {len(missing_ids)} case(s) flagged has_manual_lesion in {args.cohort} "
+              f"never produced a lesion_stats row on Kaggle (no lesion voxels in the label file) "
+              f"-- excluded from strata.csv: {sorted(missing_ids)}")
+        print(reasons.to_string(index=False))
+
     ring_widths = [CFG["strata"]["cnr"]["ring_width_mm_primary"]] + CFG["strata"]["cnr"]["ring_width_mm_sensitivity"]
 
     vol_cuts = df["volume_mm3"].quantile([1 / 3, 2 / 3]).tolist()
