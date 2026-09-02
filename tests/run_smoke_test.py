@@ -56,6 +56,12 @@ def main():
     data_root = tmp / "data"
     for d in ("scripts", "src", "config"):
         shutil.copytree(REPO / d, repo / d)
+    # The real repo's config/frozen_thresholds.yaml now holds real, frozen PANORAMA strata/
+    # splits (frozen 2026-09-01). Copied verbatim, compute_strata.py/make_splits.py would
+    # correctly refuse to overwrite it -- but this test needs a clean slate to freeze fresh
+    # synthetic-data thresholds into, matching the "never touches the real frozen_thresholds"
+    # promise above.
+    (repo / "config" / "frozen_thresholds.yaml").unlink(missing_ok=True)
     (repo / "splits").mkdir()
     print(f"Working dir: {tmp}")
 
