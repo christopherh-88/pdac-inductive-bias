@@ -154,6 +154,18 @@ back down.
   parameters, with a valid post-ablation forward pass. **Not yet verified:** the full
   `nnUNetTrainer.initialize()` path (needs a real preprocessed dataset + plans.json) and
   anything GPU-dependent (VRAM, step time, multi-epoch training) — those remain week-one items.
+- RESOLVED (2026-09-02): the GPU-dependent items above are now verified for real, on a Kaggle
+  free-tier P100 kernel (`scripts/verify/phase0_gpu_verify.py`) used as an interim substitute
+  for confirmed NYU/USC GPU access. On 8 real manual-lesion cases
+  (`Dataset999_PDACSmoke`): the full `nnUNetTrainer.initialize()` path ran for both arms and the
+  identity control, each completing real train iterations (`cnn_resenc_m` returncode 0, 7.15 GB
+  peak VRAM; `transformer_primusv2s` returncode 0, 6.34 GB peak VRAM, 25,477,406 params;
+  `identity_control` returncode 0, 3263 MB peak VRAM, ablation confirmed dropping params
+  25,477,406 → 2,788,190). Both non-identity arms completed `nnUNetv2_predict` through to a
+  Dice number. This is diagnostic verification only, not Tier A training — see
+  `preregistration/DEVIATIONS.md` for the preliminary architecture record this produced and its
+  caveats (patch-size mismatch between arms' auto-planned configs, CNN param count not
+  captured).
 
 ## Key upstream references
 

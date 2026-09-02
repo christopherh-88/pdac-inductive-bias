@@ -44,8 +44,11 @@ def occlude_case(case_id, img_path, manual_path, out_dirs):
         return False
     lesion_img = sitk.GetImageFromArray(lesion)
     lesion_img.SetSpacing(seg.GetSpacing())
-    dmap = sitk.GetArrayViewFromImage(sitk.SignedMaurerDistanceMap(
-        lesion_img, insideIsPositive=False, squaredDistance=False, useImageSpacing=True))
+    # SignedMaurerDistanceMap's return is an unnamed temporary; GetArrayViewFromImage on it
+    # directly is a zero-copy view that goes stale as soon as the temporary is garbage-collected.
+    dmap_img = sitk.SignedMaurerDistanceMap(
+        lesion_img, insideIsPositive=False, squaredDistance=False, useImageSpacing=True)
+    dmap = sitk.GetArrayFromImage(dmap_img)
     for (lo, hi), out_dir in zip(SHELLS, out_dirs):
         shell = (dmap > lo) & (dmap <= hi)
         occluded = hu.copy()
@@ -135,6 +138,10 @@ def main():
     if args.stage == "occlude":
         stage_occlude(args)
     else:
+        missing = [f"--{n.replace('_', '-')}" for n in ("refs", "pred_base_cnn", "pred_base_tf")
+                   if getattr(args, n) is None]
+        if missing:
+            ap.error(f"--stage score requires {', '.join(missing)}")
         stage_score(args)
 
 

@@ -42,14 +42,20 @@ def main():
                     help="optional JSON file mapping raw source values to canonical LOSO groups "
                          "(e.g. {\"RUMC\": \"Radboud\", \"UMCG\": \"UMCG\", ...}); every raw "
                          "value in the cohort must be covered")
+    ap.add_argument("--out-json", default=Path("splits/splits_final.json"), type=Path)
+    ap.add_argument("--frozen-out", default=None, type=Path,
+                     help="where to write the frozen splits/source-grouping record; defaults to "
+                          "config/frozen_thresholds.yaml. Override for a dry run/smoke test so "
+                          "it doesn't write (or refuse to overwrite) the real frozen config.")
     args = ap.parse_args()
 
-    out_json = Path("splits/splits_final.json")
+    out_json = args.out_json
+    frozen_path = args.frozen_out or FROZEN_PATH
     if out_json.exists():
         raise SystemExit(f"{out_json} exists — splits are frozen once and never regenerated.")
-    frozen = yaml.safe_load(open(FROZEN_PATH)) if FROZEN_PATH.exists() else {}
+    frozen = yaml.safe_load(open(frozen_path)) if frozen_path.exists() else {}
     if "splits" in (frozen or {}):
-        raise SystemExit(f"{FROZEN_PATH} already contains a frozen 'splits' section — refusing "
+        raise SystemExit(f"{frozen_path} already contains a frozen 'splits' section — refusing "
                          "to overwrite. Source grouping is frozen once, same as the splits.")
 
     n_folds = CFG["splits"]["n_folds"]
@@ -120,12 +126,12 @@ def main():
         "n_cases": int(len(df)),
         "n_patients": int(len(pat)),
     }
-    yaml.safe_dump(frozen, open(FROZEN_PATH, "w"), sort_keys=False)
+    yaml.safe_dump(frozen, open(frozen_path, "w"), sort_keys=False)
 
     print(f"Froze {n_folds}-fold splits over {len(df)} cases / {len(pat)} patients (seed "
           f"{CFG['splits']['split_seed']}).")
     print(df.groupby(["fold", args.source_col]).size().unstack(fill_value=0))
-    print(f"Source grouping frozen into {FROZEN_PATH}.")
+    print(f"Source grouping frozen into {frozen_path}.")
     print("Copy splits_final.json into nnUNet_preprocessed/<Dataset>/ after preprocessing, "
           "then commit splits/ and tag prereg-v1.")
 

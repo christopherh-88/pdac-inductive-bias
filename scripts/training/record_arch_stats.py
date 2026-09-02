@@ -50,12 +50,17 @@ def main():
     ap.add_argument("--tf-params", type=int, default=None)
     ap.add_argument("--tf-vram-gb", type=float, default=None)
     ap.add_argument("--tf-step-time-s", type=float, default=None)
+    ap.add_argument("--frozen-out", default=None, type=Path,
+                     help="where to write the frozen architecture record; defaults to "
+                          "config/frozen_thresholds.yaml. Override for a dry run/smoke test so "
+                          "it doesn't write (or refuse to overwrite) the real frozen config.")
     args = ap.parse_args()
 
-    frozen = yaml.safe_load(open(FROZEN_PATH)) if FROZEN_PATH.exists() else {}
+    frozen_path = args.frozen_out or FROZEN_PATH
+    frozen = yaml.safe_load(open(frozen_path)) if frozen_path.exists() else {}
     frozen = frozen or {}
     if "architecture" in frozen:
-        raise SystemExit(f"{FROZEN_PATH} already has an 'architecture' section — frozen once, "
+        raise SystemExit(f"{frozen_path} already has an 'architecture' section — frozen once, "
                          "same as splits. Delete it by hand first if this is a genuine redo.")
 
     pz, py, px = args.patch_size
@@ -91,7 +96,7 @@ def main():
                     "token grid regardless of attention pattern",
         },
     }
-    yaml.safe_dump(frozen, open(FROZEN_PATH, "w"), sort_keys=False)
+    yaml.safe_dump(frozen, open(frozen_path, "w"), sort_keys=False)
 
     print(f"Patch {tuple(args.patch_size)} -> token grid {token_grid} = {n_tokens} tokens "
           f"(stride {tuple(args.tokenizer_stride)})")
@@ -101,7 +106,7 @@ def main():
     print(f"Transformer: {args.primus_trainer}"
           + (f", {args.tf_params:,} params" if args.tf_params else "")
           + (f", {args.tf_vram_gb} GB peak" if args.tf_vram_gb else ""))
-    print(f"Wrote architecture record to {FROZEN_PATH}.")
+    print(f"Wrote architecture record to {frozen_path}.")
 
 
 if __name__ == "__main__":

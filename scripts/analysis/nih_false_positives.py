@@ -58,6 +58,11 @@ def main():
                 continue
             rows.append({"case_id": r["case_id"], "patient_id": r["patient_id"], "arm": arm,
                          "fp_count": count_case(p)})
+    if not rows:
+        raise SystemExit(
+            f"No prediction files matched any NIH case_id under {args.pred_cnn} or {args.pred_tf} "
+            "— check the directories and the '<case_id>.nii.gz' naming convention"
+        )
     df = pd.DataFrame(rows)
     df.to_csv(args.out / "nih_fp_per_case.csv", index=False)
 

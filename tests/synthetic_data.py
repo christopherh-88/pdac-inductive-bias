@@ -5,9 +5,17 @@ be exercised end to end (dedup -> strata -> splits -> analysis) without download
 or running a GPU training job. Mirrors the real layout exactly:
 
   data_root/panorama/images/<case_id>_0000.nii.gz
-  data_root/panorama/panorama_labels/manual_labels/<case_id>.nii.gz   (label 1 only, PDAC+ only)
-  data_root/panorama/panorama_labels/automatic_labels/<case_id>.nii.gz (labels 2-6, all cases)
+  data_root/panorama/panorama_labels/manual_labels/<case_id>.nii.gz    (ONE file, labels 1-6
+                                                                         combined: confirmed-lesion
+                                                                         cases only)
+  data_root/panorama/panorama_labels/automatic_labels/<case_id>.nii.gz (ONE file, labels 2-6
+                                                                         combined: the rest)
   data_root/panorama/panorama_labels/clinical_information.xlsx
+
+manual_labels/ and automatic_labels/ are mutually exclusive per case — confirmed against the
+real DIAGNijmegen/panorama_labels repo (482 + 1756 = 2238 total cases, zero overlap). Each
+directory holds a single multi-class segmentation (lesion + veins + arteries + parenchyma +
+duct + CBD all in one file), not two complementary partial-label files to be combined.
 
 Also writes one exact-content duplicate case (mimicking MSD/NIH cases redistributed inside
 PANORAMA) so deduplicate.py's content-hash stage has something real to catch.
@@ -49,15 +57,14 @@ def _make_case(img_dir, manual_dir, auto_dir, case_id, lesion_radius, lesion_hu,
     duct_mask = ((xx - xc) ** 2 + (yy - (yc + 20)) ** 2 + (zz - zc) ** 2) <= 3 ** 2
     cbd_mask = ((xx - xc) ** 2 + (yy - (yc - 20)) ** 2 + (zz - zc) ** 2) <= 3 ** 2
 
-    auto_seg = np.zeros(SHAPE[::-1], dtype=np.uint8)
-    auto_seg[parenchyma_mask] = 4
-    auto_seg[veins_mask] = 2
-    auto_seg[arteries_mask] = 3
-    auto_seg[duct_mask] = 5
-    auto_seg[cbd_mask] = 6
-
-    manual_seg = np.zeros(SHAPE[::-1], dtype=np.uint8)
-    manual_seg[lesion_mask] = 1
+    seg = np.zeros(SHAPE[::-1], dtype=np.uint8)
+    seg[parenchyma_mask] = 4
+    seg[veins_mask] = 2
+    seg[arteries_mask] = 3
+    seg[duct_mask] = 5
+    seg[cbd_mask] = 6
+    if lesion_radius > 0:
+        seg[lesion_mask] = 1
 
     def to_img(arr):
         img = sitk.GetImageFromArray(arr)
@@ -67,9 +74,10 @@ def _make_case(img_dir, manual_dir, auto_dir, case_id, lesion_radius, lesion_hu,
         return img
 
     sitk.WriteImage(to_img(hu), str(img_dir / f"{case_id}_0000.nii.gz"), useCompression=True)
-    sitk.WriteImage(to_img(auto_seg), str(auto_dir / f"{case_id}.nii.gz"), useCompression=True)
-    if lesion_radius > 0:
-        sitk.WriteImage(to_img(manual_seg), str(manual_dir / f"{case_id}.nii.gz"), useCompression=True)
+    # One combined multi-class file, in manual_labels/ if this case has a confirmed lesion,
+    # else automatic_labels/ — mirrors the real repo's mutually-exclusive layout.
+    dest_dir = manual_dir if lesion_radius > 0 else auto_dir
+    sitk.WriteImage(to_img(seg), str(dest_dir / f"{case_id}.nii.gz"), useCompression=True)
     return int(lesion_mask.sum())
 
 
@@ -98,12 +106,14 @@ def generate(data_root: Path, n_patients=30, seed=20260823):
         _make_case(img_dir, manual_dir, auto_dir, case_id, 0, 0, seed=2000 + k)
         info_rows.append({"case_id": case_id, "source": "NIH"})
 
-    # One exact-content duplicate, no manual label (as if redistributed under another ID)
+    # One exact-content duplicate, no manual label of its own (as if redistributed under another
+    # ID and only auto-segmented there). dup_src (p=0) has a lesion, so its combined seg file
+    # lives in manual_dir — mirror that content into auto_dir under the new id.
     dup_src = info_rows[0]["case_id"]
     dup_id = "999001_00001"
     sitk.WriteImage(sitk.ReadImage(str(img_dir / f"{dup_src}_0000.nii.gz")),
                     str(img_dir / f"{dup_id}_0000.nii.gz"), useCompression=True)
-    sitk.WriteImage(sitk.ReadImage(str(auto_dir / f"{dup_src}.nii.gz")),
+    sitk.WriteImage(sitk.ReadImage(str(manual_dir / f"{dup_src}.nii.gz")),
                     str(auto_dir / f"{dup_id}.nii.gz"), useCompression=True)
     info_rows.append({"case_id": dup_id, "source": "MSKCC"})
 

@@ -25,3 +25,32 @@ splits:
   - PANORAMA
   n_cases: 478
   n_patients: 477
+architecture:
+  nnunet_commit: 0e495086eb108ff79afe106291e8c15bd2f2bc3a
+  gpu: Tesla-P100-16GB (Kaggle free-tier, preliminary verification only)
+  patch_size_zyx:
+  - 64
+  - 192
+  - 160
+  cnn:
+    plans: nnUNetResEncUNetMPlans
+    n_params: null
+    peak_vram_gb: 7.149
+    step_time_s: null
+  transformer:
+    trainer: nnUNet_PrimusV2S_Trainer
+    n_params: 25477406
+    peak_vram_gb: 6.341
+    step_time_s: null
+    tokenizer_stride_zyx:
+    - 8
+    - 8
+    - 8
+    token_grid_zyx:
+    - 8
+    - 24
+    - 20
+    n_tokens: 3840
+    note: 'token resolution is a pre-registered control (H1/H2 confound check): a
+      lesion smaller than one token cannot be localized any finer than the token grid
+      regardless of attention pattern'

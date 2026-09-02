@@ -4,8 +4,10 @@
 Per case (manual-lesion PDAC cases only):
   - lesion volume (mm^3) and max in-plane diameter (mm) from the manual label (label 1)
   - CNR = |mean HU(lesion) - mean HU(ring)| / SD(ring) for ring widths 5, 10, 15 mm,
-    ring = automatic parenchyma (label 4) within the ring distance of the lesion surface,
-    excluding lesion, duct, vessels, CBD (labels 1,2,3,5,6)
+    ring = parenchyma (label 4) within the ring distance of the lesion surface, excluding
+    lesion, duct, vessels, CBD (labels 1,2,3,5,6) — all read from the SAME manual-side file,
+    since manual_labels/automatic_labels are mutually exclusive per case in the real repo and
+    each is one multi-class file (lesion + organs together), not two files to combine.
 
 Then computes volume and CNR tertile cut points over the cohort ONCE and appends them to
 config/frozen_thresholds.yaml. Also runs the pre-specified ring-width rank-stability check
@@ -31,13 +33,26 @@ L = CFG["labels"]["panorama"]
 def lesion_stats(img: sitk.Image, manual: sitk.Image, auto: sitk.Image, ring_mm: float):
     sp = np.array(manual.GetSpacing())          # (x, y, z)
     vox_mm3 = float(np.prod(sp))
-    m = sitk.GetArrayViewFromImage(manual)      # (z, y, x)
-    a = sitk.GetArrayViewFromImage(auto)
-    hu = sitk.GetArrayViewFromImage(img)
+    m_full = sitk.GetArrayViewFromImage(manual)  # (z, y, x)
+    a_full = sitk.GetArrayViewFromImage(auto)
+    hu_full = sitk.GetArrayViewFromImage(img)
 
-    lesion = m == L["pdac_lesion"]
-    if not lesion.any():
+    lesion_full = m_full == L["pdac_lesion"]
+    if not lesion_full.any():
         return None
+
+    # Crop to the lesion's bounding box + ring margin before the distance-map step: a full-res
+    # PANORAMA CT is ~512x512x150-300 (40M+ voxels), and running SignedMaurerDistanceMap over
+    # the whole volume reliably segfaulted ITK's native code in practice (confirmed on Kaggle
+    # against real cases — a synthetic 64x64x48 test volume never surfaces this).
+    zs, ys, xs = np.where(lesion_full)
+    mz, my, mx = (int(np.ceil(ring_mm / sp[i])) + 2 for i in (2, 1, 0))
+    z0, z1 = max(zs.min() - mz, 0), min(zs.max() + mz + 1, m_full.shape[0])
+    y0, y1 = max(ys.min() - my, 0), min(ys.max() + my + 1, m_full.shape[1])
+    x0, x1 = max(xs.min() - mx, 0), min(xs.max() + mx + 1, m_full.shape[2])
+    m, a, hu = m_full[z0:z1, y0:y1, x0:x1], a_full[z0:z1, y0:y1, x0:x1], hu_full[z0:z1, y0:y1, x0:x1]
+    lesion = m == L["pdac_lesion"]
+
     volume = float(lesion.sum()) * vox_mm3
     # max in-plane diameter: largest Feret-ish extent per axial slice (bounding-box diagonal proxy)
     zs, ys, xs = np.where(lesion)
@@ -51,9 +66,12 @@ def lesion_stats(img: sitk.Image, manual: sitk.Image, auto: sitk.Image, ring_mm:
     # signed distance (mm) from lesion surface, positive outside
     lesion_img = sitk.GetImageFromArray(lesion.astype(np.uint8))
     lesion_img.SetSpacing(tuple(sp))
-    dmap = sitk.GetArrayViewFromImage(
-        sitk.SignedMaurerDistanceMap(lesion_img, insideIsPositive=False, squaredDistance=False,
-                                     useImageSpacing=True))
+    # SignedMaurerDistanceMap's return is an unnamed temporary; GetArrayViewFromImage on it
+    # directly is a zero-copy view that goes stale as soon as the temporary is garbage-collected.
+    # Name it and copy the array instead.
+    dmap_img = sitk.SignedMaurerDistanceMap(lesion_img, insideIsPositive=False, squaredDistance=False,
+                                             useImageSpacing=True)
+    dmap = sitk.GetArrayFromImage(dmap_img)
 
     exclude = np.isin(m, [L["pdac_lesion"]]) | np.isin(
         a, [L["pdac_lesion"], L["veins"], L["arteries"], L["pancreatic_duct"], L["common_bile_duct"]])
@@ -77,18 +95,26 @@ def main():
     ring_widths = [CFG["strata"]["cnr"]["ring_width_mm_primary"]] + CFG["strata"]["cnr"]["ring_width_mm_sensitivity"]
 
     rows = []
+    dropped = []
     for _, r in tqdm(cases.iterrows(), total=len(cases)):
         img = sitk.ReadImage(r["path"])
+        # manual_labels/automatic_labels are mutually exclusive per case in the real repo (482 +
+        # 1756 = 2238 total, zero overlap) — the single manual-side file already contains lesion
+        # + vessels + parenchyma + duct + CBD together, so it doubles for both roles below.
         manual = sitk.ReadImage(r["manual_label"])
-        auto = sitk.ReadImage(r["automatic_label"])
+        auto = manual
         row = {"case_id": r["case_id"]}
         for w in ring_widths:
             res = lesion_stats(img, manual, auto, w)
             if res is None:
+                dropped.append(r["case_id"])
                 break
             row["volume_mm3"], row["max_inplane_diam_mm"], row[f"cnr_ring{w}mm"] = res
         else:
             rows.append(row)
+    if dropped:
+        print(f"WARNING: {len(dropped)} case(s) flagged has_manual_lesion but contain no lesion "
+              f"voxels in the label file — dropped from strata.csv: {dropped}")
     df = pd.DataFrame(rows)
 
     # Frozen tertile cut points over the cohort (computed once)

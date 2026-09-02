@@ -80,21 +80,33 @@ def bootstrap_ci(df: pd.DataFrame, stat_fn, n_boot: int, seed: int, patient_col=
     groups = df.groupby(patient_col).indices  # {patient_id: ndarray of positional indices}
     patients = np.array(list(groups.keys()))
     out = []
+    last_exc = None
     for _ in range(n_boot):
         sample = rng.choice(patients, size=len(patients), replace=True)
         pos = np.concatenate([groups[p] for p in sample])
         boot = df.iloc[pos]
         try:
             out.append(stat_fn(boot))
-        except Exception:
+        except Exception as exc:
             out.append(np.nan)
+            last_exc = exc
+    if last_exc is not None and np.isnan(out).all():
+        raise RuntimeError(
+            f"stat_fn failed on every one of {n_boot} bootstrap resamples — "
+            "this is a bug in stat_fn, not expected resample degeneracy"
+        ) from last_exc
     lo, hi = np.nanpercentile(out, [2.5, 97.5])
     return float(lo), float(hi)
 
 
 def all_metrics(pred_path, ref_path):
     pred, sp = load_mask(pred_path)
-    ref, _ = load_mask(ref_path)
+    ref, ref_sp = load_mask(ref_path)
+    if sp != ref_sp:
+        raise ValueError(
+            f"spacing mismatch: pred {pred_path} has {sp}, ref {ref_path} has {ref_sp} — "
+            "distance-based metrics (NSD, HD95, false-positive volume) require a common grid"
+        )
     return {
         "dice": dice(pred, ref),
         "nsd2mm": nsd(pred, ref, sp),
