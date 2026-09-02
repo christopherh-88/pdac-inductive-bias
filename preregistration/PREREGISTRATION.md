@@ -79,11 +79,13 @@ All margins below are fixed here and reported as pre-set whether or not they are
 
 ## 4. Cohort and evaluation rules
 
-- Only manually delineated PDAC cases (n = 482 in PANORAMA) enter test folds. The 194
-  model-generated delineations never enter evaluation; their use as extra training data is an
-  optional, separately reported ablation.
-- MSD Task07 restricted to PDAC (98 cases per Suman et al. 2021; stented patients removed);
-  non-PDAC masses excluded from all PDAC analyses.
+- Only manually delineated PDAC cases (n = 481 in PANORAMA after deduplication) enter test
+  folds. The 194 model-generated delineations never enter evaluation; their use as extra
+  training data is an optional, separately reported ablation.
+- MSD Task07 restricted to PDAC (98 nominal cases per Suman et al. 2021; stented patients
+  removed; 97 after deduplication — `100278_00001` and `100205_00001` are the same underlying
+  scan under two study IDs, see `splits/duplicates.csv`); non-PDAC masses excluded from all
+  PDAC analyses.
 - NIH Pancreas-CT (80 cases, no tumors) is a negative control only: false-positive lesions
   per case, never a tumor test set.
 - Duplicate scans across PANORAMA, MSD Task07, and NIH Pancreas-CT are removed before

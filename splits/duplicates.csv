@@ -1,0 +1,2 @@
+case_id,batch,member_path,meta_fp,content_hash,has_manual_label,has_automatic_label,duplicate_of
+100278_00001,1,100278_00001_0000.nii.gz,5dcef011a819fbf305afcedc31ec4552575dc4f2ef5140c26db4511f2cabc98d,44c313befcfc4d4d2b834efcd7e4e4814fb30b7478b7ac8557d019284692ecd6,True,False,100205_00001

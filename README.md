@@ -35,8 +35,8 @@ preset selection.
 
 | Source | What | How to get it |
 | --- | --- | --- |
-| PANORAMA public training set (2,238 CECT; 676 PDAC, 482 manual delineations) | Primary cohort | `scripts/download/download_panorama.sh` (4 Zenodo batches + labels repo) |
-| MSD Task07 (98 PDAC per Suman et al. 2021 split) | Third source for leave-one-source-out | Redistributed inside PANORAMA |
+| PANORAMA public training set (2,238 CECT nominal, 2,237 after deduplication; 675 PDAC, 481 manual delineations) | Primary cohort | `scripts/download/download_panorama.sh` (4 Zenodo batches + labels repo) |
+| MSD Task07 (98 PDAC nominal per Suman et al. 2021 split, 97 after deduplication) | Third source for leave-one-source-out | Redistributed inside PANORAMA |
 | NIH Pancreas-CT (80 cases, no tumors) | Negative control only | Redistributed inside PANORAMA |
 | PanTS (36,390 CT, 145 centers) | Optional Tier C external test | https://github.com/MrGiovanni/PanTS |
 
@@ -92,12 +92,52 @@ bash scripts/training/verify_pipeline.sh
 bash scripts/training/run_tier_a.sh
 ```
 
+### Disk-constrained alternative for steps 2-4
+
+`download_panorama.sh` needs ~400 GB free (180 GB zipped, all 4 batches at once). Where that
+much disk isn't available (e.g. a Kaggle notebook), `scripts/download/kaggle_stream_cohort.py`
+processes one ~50 GB Zenodo batch at a time — extracting, hashing, and computing lesion
+volume/diameter/CNR per case, then deleting the case and eventually the whole batch zip before
+moving on — so raw CT never needs more than one batch's worth of disk at once. It ships back
+only small CSVs (`case_records.csv`, `lesion_stats_raw.csv`, `clinical_information.xlsx`); the
+actual images still have to be (re-)downloaded wherever training happens.
+`scripts/data/finalize_cohort_from_stream.py` and `scripts/data/finalize_strata_from_stream.py`
+turn those CSVs into the same `splits/cohort.csv` / `splits/strata.csv` (and
+`config/frozen_thresholds.yaml` strata section) that `deduplicate.py` + `compute_strata.py`
+would produce from live files — run them in place of steps 3-4 above once the CSVs are pulled
+back down.
+
 ## Known open items (to resolve at freeze time, before training)
 
-- The PANORAMA public set lists five contributing institutions (RUMC, UMCG, ZGT, Karolinska,
-  Haukeland) plus MSD and NIH; the project description groups sources as Radboud / UMCG /
-  MSKCC. The leave-one-source-out grouping is fixed from `clinical_information.xlsx` when the
-  splits are frozen, and recorded in `config/frozen_thresholds.yaml`.
+- PARTIALLY RESOLVED (2026-08-30): inspected the real `clinical_information.xlsx` (2,238 rows,
+  columns `PANORAMA_patient_id`, `PANORAMA_study_id`, `anonymized_study_date`, `patient_age`,
+  `patient_sex`, `scanner`, `label`, `level`). `label` is literally `PDAC` / `non-PDAC` — this
+  **is** the Suman et al. (2021) split already applied by PANORAMA, no separate lookup needed.
+  `level == MSD_dataset` (194 rows, 98 PDAC) and `level == NIH_dataset` (80 rows, 0 PDAC) match
+  the project description's counts exactly and identify the MSKCC and NIH sources unambiguously.
+  `scripts/data/deduplicate.py` now derives `is_pdac` from `label` and `source` from `level`
+  (`MSD_dataset`->MSKCC, `NIH_dataset`->NIH, else `PANORAMA`) automatically. **Still open:** the
+  remaining ~1,964 native-PANORAMA rows carry no institution field in this file — the project
+  description's Radboud/UMCG split within them (vs. the five contributing institutions RUMC,
+  UMCG, ZGT, Karolinska, Haukeland the PANORAMA site lists) is still undecided; fix it from
+  `scanner`/`anonymized_study_date` patterns or another metadata file when splits are frozen,
+  and record the decision in `config/frozen_thresholds.yaml`.
+  Also fixed in the same pass: the clinical-merge join key previously picked by naive
+  `"patient"`/`"case"`/`"id"` substring matching resolved to `panorama_patient_id` (bare patient
+  id, e.g. `100000`) instead of `panorama_study_id` (the actual case-id grain used everywhere
+  else in this repo, e.g. `100000_00001`) — every row would have silently failed to join,
+  leaving `source`/`label` all-null with no error. Now prefers a `study_id` column explicitly
+  and aborts if fewer than 99% of cohort case_ids match the chosen key.
+- RESOLVED (2026-09-01): full 4-batch cohort built via the Kaggle streaming path
+  (`scripts/download/kaggle_stream_cohort.py` v18-v21) and finalized locally
+  (`finalize_cohort_from_stream.py`, `finalize_strata_from_stream.py`, `make_splits.py`).
+  Cross-batch content-hash dedup found one genuine duplicate beyond the nominal counts above:
+  `100278_00001` and `100205_00001` (two different `PANORAMA_patient_id`s, both `MSD_dataset`,
+  both PDAC) share an identical `meta_fp` and `content_hash` — the same scan redistributed under
+  two study IDs. One was dropped (`splits/duplicates.csv`), so the deduplicated cohort has 2,237
+  scans, 675 PDAC (481 manual delineations), and MSD Task07 has 97 unique PDAC cases, not the
+  194/98 nominal counts above. `splits/cohort.csv`, `splits/strata.csv`, and
+  `splits/splits_final.json` are frozen from this deduplicated cohort.
 - PrimusV2 preset (S/B/M/L) and ResEnc preset (M/L/XL) are chosen together once GPU VRAM is
   confirmed, to satisfy the matched-budget control; recorded in the frozen config.
 - RESOLVED (2026-08-23): nnU-Net master now also ships `nnUNet_PrimusV3S_Trainer` and

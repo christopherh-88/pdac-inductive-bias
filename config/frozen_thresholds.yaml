@@ -1,0 +1,27 @@
+strata:
+  n_cases: 478
+  volume_tertile_cuts_mm3:
+  - 3827.126426696778
+  - 10047.765804794733
+  cnr_tertile_cuts:
+  - 0.29874809452391526
+  - 0.6623977701945981
+  cnr_ring_rank_stability_spearman:
+    cnr_ring10mm__vs__cnr_ring5mm: 0.9317159713935227
+    cnr_ring10mm__vs__cnr_ring15mm: 0.971777690280538
+    cnr_ring5mm__vs__cnr_ring15mm: 0.8648485809418106
+  contrast_axis_exploratory: false
+  computed_via: kaggle_stream_cohort.py (streaming, disk-constrained)
+splits:
+  n_folds: 5
+  split_seed: 20260823
+  source_column: source
+  source_raw_value_counts:
+    PANORAMA: 382
+    MSKCC: 96
+  source_mapping: null
+  canonical_source_groups:
+  - MSKCC
+  - PANORAMA
+  n_cases: 478
+  n_patients: 477
