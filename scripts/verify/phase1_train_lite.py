@@ -283,10 +283,20 @@ class _TimeBoxedMixin:
         super().on_epoch_end()
         elapsed = time.time() - self._arm_start_time
         if elapsed > PER_ARM_BUDGET_S:
+            # nnU-Net's own on_epoch_end() only writes checkpoint_latest.pth every
+            # self.save_every (default 50) epochs, and checkpoint_final.pth only at the true end
+            # of training -- so a session that stops early (as this one always does) can exit
+            # with ONLY checkpoint_best.pth on disk. nnUNetv2_train --c (via maybe_load_checkpoint)
+            # only ever looks for checkpoint_final.pth or checkpoint_latest.pth, never
+            # checkpoint_best.pth -- so without this explicit save, the next session's --c would
+            # silently find nothing and restart from scratch, discarding this session's progress.
+            # Writing checkpoint_final.pth here (the name --c checks first) makes this session's
+            # stop point look like a normal completed run to nnU-Net's own resume logic.
+            self.save_checkpoint(os.path.join(self.output_folder, "checkpoint_final.pth"))
             self.print_to_log_file(
                 f"TIME BUDGET REACHED ({elapsed:.0f}s > {PER_ARM_BUDGET_S}s) after epoch "
                 f"{self.current_epoch} -- stopping cleanly for this session; "
-                "checkpoint_latest.pth is valid, resume with --c next session.")
+                "checkpoint_final.pth written, resume with --c next session.")
             raise SystemExit(0)
 
 

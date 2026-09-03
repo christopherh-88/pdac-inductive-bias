@@ -105,5 +105,18 @@ recorded here since they reflect real infrastructure findings, not preview resul
   of per-iteration speed.
 
 The CNN arm (`cnn_resenc_m`) completed 19 real epochs on the first successful run (pseudo-dice
-improving to ~0.39) and exited cleanly with a valid checkpoint; the transformer arm's first
-clean run is pending the next Kaggle GPU-quota reset.
+improving to ~0.39) and exited cleanly; the transformer arm's first clean run is pending the
+next Kaggle GPU-quota reset.
+
+A third bug surfaced once that first session's output was inspected: nnU-Net only writes
+`checkpoint_latest.pth` every `save_every` (default 50) epochs and `checkpoint_final.pth` only
+at the true end of training, so a session stopping at epoch 19 left only `checkpoint_best.pth`
+on disk. `nnUNetv2_train --c` (via `maybe_load_checkpoint`) only ever looks for
+`checkpoint_final.pth`/`checkpoint_latest.pth`, never `checkpoint_best.pth` -- so the next
+session's `--c` would have silently found nothing and restarted from scratch, discarding all 19
+epochs. Fixed by having `_TimeBoxedMixin.on_epoch_end` explicitly save `checkpoint_final.pth`
+before exiting. For the already-completed first session (which predates this fix), the fold_0
+`checkpoint_best.pth` for both arms was copied to `checkpoint_final.pth` by hand before
+repackaging as the `pdac-tier-a-lite-checkpoints` Dataset -- the underlying saved state dict is
+identical regardless of which filename `save_checkpoint()` is given, so this recovers the same
+progress the code-level fix would have produced automatically.
