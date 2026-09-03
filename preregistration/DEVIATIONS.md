@@ -66,3 +66,44 @@ stats. `finalize_strata_from_stream.py` now detects and prints this reconciliati
 `scripts/analysis/compute_strata.py` already gave for its non-streaming path. The frozen
 `n_cases: 478` in `config/frozen_thresholds.yaml` was already computed correctly before this
 fix — the fix adds visibility, it does not change the frozen numbers.
+
+## Phase 1 real-data training preview, from the same Kaggle GPU substitute (2026-09-03)
+
+`scripts/verify/phase1_stage_pool.py` and `scripts/verify/phase1_train_lite.py` extend the
+Phase 0 Kaggle P100 substitute (see above) one step further: not just a smoke test, but a real
+"fold 0" training curve for both arms (CNN ResEncM, PrimusV2S) on `Dataset601_PDACTierALite` — a
+32-case real manual-lesion PANORAMA pool, staged and split 24/8 train/val by
+`phase1_stage_pool.py`. This is still not Tier A: 32 cases vs. the pre-registered 478-case
+cohort, single P100 vs. the matched-budget dedicated 24-48GB card, and only fold 0 vs. 5 folds.
+Nothing here supersedes or informs any frozen threshold; it exists solely as a further
+diagnostic preview while confirmed NYU/USC GPU access is pending.
+
+Kaggle's free tier (~30 GPU-hrs/week, ~9-12hr session cap) cannot finish real training in one
+sitting, so `phase1_train_lite.py` is written to run incrementally across multiple weekly quota
+resets: it checkpoints and exits cleanly partway through training (via a per-arm wall-clock
+budget checked at each epoch boundary), ships `nnUNet_preprocessed/`/`nnUNet_results/` back out
+as kernel output for repackaging into a persistent `pdac-tier-a-lite-checkpoints` Kaggle Dataset,
+and resumes from that checkpoint (`nnUNetv2_train --c`) on a later run.
+
+Two real bugs surfaced and were fixed during the first two multi-hour runs on this kernel,
+recorded here since they reflect real infrastructure findings, not preview results:
+
+- Every training-launch attempt silently crash-looped (whole container reset, zero output ever
+  printed) at the exact same point. The actual cause: `nnUNetv2_train` is itself a Python
+  entry-point process, and CPython fully block-buffers a child process's stdout when it's
+  redirected to a pipe rather than a tty — so anything it printed was trapped in its own
+  unflushed buffer and lost the moment the container was killed, regardless of how fast the
+  parent read from the pipe. Fixed by setting `PYTHONUNBUFFERED=1` in the subprocess environment,
+  which finally surfaced real output/tracebacks instead of silence.
+- With real output visible, the transformer arm (`nnUNet_PrimusV2_TierALite`) was then observed
+  to be genuinely training (decreasing loss) but got hard-killed mid-epoch by the *outer*
+  subprocess timeout, because the *inner* clean-exit budget check only runs once per epoch, and a
+  full 250-iteration epoch (with `nnUNet_n_proc_DA=0`, chosen earlier to avoid a suspected
+  CUDA-after-fork crash) took longer than the budget-check interval. Fixed by capping
+  `num_iterations_per_epoch`/`num_val_iterations_per_epoch` to 50/10 in the time-boxed trainer
+  mixin, so the clean-exit check fires often enough to guarantee a checkpointed stop regardless
+  of per-iteration speed.
+
+The CNN arm (`cnn_resenc_m`) completed 19 real epochs on the first successful run (pseudo-dice
+improving to ~0.39) and exited cleanly with a valid checkpoint; the transformer arm's first
+clean run is pending the next Kaggle GPU-quota reset.
