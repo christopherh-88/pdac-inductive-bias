@@ -26,6 +26,8 @@ is committed and tagged before training starts.
 | Convolutional | nnU-Net ResEnc preset M/L/XL (chosen by VRAM) | `nnUNetv2_train <ID> 3d_fullres <fold> -p nnUNetResEncUNet{M,L,XL}Plans` |
 | Transformer | PrimusV2 (S/B/M/L), integrated in nnU-Net master | `nnUNetv2_train <ID> 3d_fullres <fold> -tr nnUNet_PrimusV2{S,B,M,L}_Trainer` |
 | Identity control (H2b) | PrimusV2 with transformer blocks replaced by identity | `src/trainers/primus_identity_trainer.py` |
+| Seed replicates | Either arm, one trainer class per replicate seed | `src/trainers/seed_variant_trainers.py` |
+| Session budget | Either arm: wall-clock stop, frequent checkpoints, optional (deviating) epoch override | `src/trainers/budget_trainers.py` |
 
 Both arms share nnU-Net preprocessing, augmentation, loss, schedule (1000 × 250), and
 inference. See [environment/SETUP.md](environment/SETUP.md) for installation and VRAM-based
@@ -47,26 +49,71 @@ lists are MIT (see [LICENSE](LICENSE)).
 ## Repository layout
 
 ```
-preregistration/    Frozen hypotheses, decision rules, margins
+preregistration/    Frozen hypotheses, decision rules, margins; DEVIATIONS.md
 config/             analysis_config.yaml (frozen) + frozen_thresholds.yaml (data-derived, frozen once)
 environment/        SETUP.md, requirements.txt
+notebooks/          Three Kaggle notebooks: prepare, run-one-task (×25, concurrent), analyze
+                    (generated; see notebooks/README.md)
 scripts/download/   PANORAMA download (Zenodo) + labels
-scripts/data/       deduplication, patient-level splits, nnU-Net dataset conversion
-scripts/training/   week-one pipeline verification, Tier A launcher, RUN_LOG.md (GPU run log),
-                    record_arch_stats.py (freezes patch/token size, params, VRAM)
-scripts/analysis/   strata computation, paired analysis, occlusion test, boundary tolerance,
-                    effective receptive field, NIH false-positive harness, failure gallery,
-                    seed-vs-fold variance decomposition, metrics
-src/trainers/       identity-ablation trainer (H2b)
+scripts/data/       deduplication, patient-level splits, leave-one-source-out folds, nnU-Net conversion
+scripts/training/   tasks.py (the 25 runs, named once), pipeline verification, Tier A and
+                    Tier B launchers, RUN_LOG.md (GPU run log), record_arch_stats.py
+                    (freezes patch/token size, params, VRAM), collect_oof.py,
+                    predict_occlusion.py
+scripts/kaggle/     pack_for_kaggle.py — chunk a large directory into an attachable dataset
+scripts/analysis/   strata, per-case metric table, H1 paired analysis, contrast sensitivity,
+                    occlusion test, boundary tolerance, LOSO, identity comparison, effective
+                    receptive field, NIH false positives, seed/fold variance, failure gallery,
+                    figures, verdict memo
+scripts/check_prereg_tag.sh   standing check that prereg-v1 has not moved and no frozen file changed
+src/trainers/       identity ablation (H2b), seed replicates, session-budget variants
 splits/             frozen 5-fold splits + case lists (committed once, never edited)
 docs/               project description v2
 tests/              synthetic-data end-to-end smoke test for the data/analysis pipeline
 ```
 
 Run `python tests/run_smoke_test.py` after changing any data or analysis script — see
-[tests/README.md](tests/README.md).
+[tests/README.md](tests/README.md). It is 123 checks over every script, against synthetic data
+with a designed answer, so it asserts on the statistical outcome rather than on exit codes.
 
-## Workflow (Tier A)
+## Where each publication deliverable comes from
+
+| # | Deliverable | Produced by |
+| --- | --- | --- |
+| 1 | Per-case metrics, both arms, all folds | `scripts/analysis/build_per_case_table.py` |
+| 2 | Stratified volume × contrast maps, per arm, with n and CIs | `paired_analysis.py` → `make_figures.py` (figs 2, 3) |
+| 3 | Occlusion curves, both arms, three shells, ERF marked | `occlusion_test.py` + `predict_occlusion.py` + `effective_receptive_field.py` → fig 4 |
+| 4 | The identity control's map, identical layout | `identity_comparison.py` → fig 5 |
+| 5 | Leave-one-source-out, both arms, every source | `make_loso_splits.py` + `run_tier_b.sh` + `loso_analysis.py` |
+| 6 | Boundary-tolerance floor and the share of LOSO loss inside it | `boundary_tolerance.py --loso` → fig 6 |
+| 7 | Seed replicate variance, separated from fold variance | `build_variance_tables.py` + `variance_decomposition.py` |
+| 8 | NIH false positives per case, in domain and under source shift | `nih_false_positives.py` |
+| 9 | Rule-selected failure gallery | `failure_gallery.py` |
+| 10 | Public repo with prereg-v1, frozen config, per-fold case list | this repository + `scripts/check_prereg_tag.sh` |
+
+The verdict for each hypothesis, read against the frozen rules rather than around them, is
+assembled by `scripts/analysis/verdict_memo.py`.
+
+## Running it
+
+### On Kaggle
+
+Three notebooks in [notebooks/](notebooks/): `00_prepare` once, `01_run` launched once per task
+and as many at a time as your quota allows, `02_analyze` whenever you want to see where things
+stand.
+
+```bash
+python scripts/training/tasks.py     # the 25 task names 01_run is launched against
+```
+
+Read [notebooks/README.md](notebooks/README.md) first. It covers how the fan-out keeps each
+session under Kaggle's 20 GB output cap (the cap is *per output*, and each worker is its own
+output), how `src/trainers/budget_trainers.py` stops training before the 12-hour session kill
+with a resumable checkpoint, and the part where the full 25-run study does **not** fit inside
+Kaggle's weekly GPU quota — what does fit, and how a reduced schedule gets recorded as a
+deviation rather than absorbed.
+
+### On a real GPU
 
 ```bash
 # 1. Environment (see environment/SETUP.md)
@@ -75,21 +122,57 @@ pip install -r environment/requirements.txt
 # 2. Data
 bash scripts/download/download_panorama.sh /path/to/data
 
-# 3. Deduplicate across PANORAMA / MSD / NIH, build cohort table
+# 3. Cohort: deduplicate across PANORAMA / MSD / NIH by image content
 python scripts/data/deduplicate.py --data-root /path/to/data --out splits/cohort.csv
 
 # 4. Strata (volume, CNR at 5/10/15 mm rings) -> freezes config/frozen_thresholds.yaml
 python scripts/analysis/compute_strata.py --data-root /path/to/data --cohort splits/cohort.csv
 
-# 5. Patient-level 5-fold splits, stratified by source x volume tertile (seed frozen)
+# 5. Patient-level 5-fold splits, then the leave-one-source-out folds appended after them
 python scripts/data/make_splits.py --cohort splits/cohort.csv --strata splits/strata.csv
+python scripts/data/make_loso_splits.py --exclude-source NIH \
+    --emit-combined splits/splits_with_loso.json
+
+#    Freeze: commit, tag prereg-v1, push. Nothing below this line runs first.
+bash scripts/check_prereg_tag.sh
 
 # 6. nnU-Net dataset + week-one end-to-end verification of both arms
 python scripts/data/convert_to_nnunet.py --data-root /path/to/data --cohort splits/cohort.csv
 bash scripts/training/verify_pipeline.sh
 
-# 7. Tier A training (5 folds x 2 arms)
+# 7. Training: Tier A (10 runs), then Tier B (15 runs)
 bash scripts/training/run_tier_a.sh
+bash scripts/training/run_tier_b.sh
+
+# 8. Gather out-of-fold predictions, one directory per arm
+python scripts/training/collect_oof.py \
+    --results-dir $nnUNet_results/Dataset501_PDAC/<trainer__plans__config> --out /preds/cnn
+
+# 9. Analysis: one metric table, then every hypothesis reads from it
+python scripts/analysis/build_per_case_table.py --arm cnn:/preds/cnn --arm tf:/preds/tf \
+    --refs /labels --out results/per_case_metrics.csv
+python scripts/analysis/paired_analysis.py --metrics-table results/per_case_metrics.csv \
+    --out results/h1                                                        # H1
+python scripts/analysis/contrast_sensitivity.py \
+    --metrics-table results/per_case_metrics.csv --out results/contrast_sensitivity
+python scripts/analysis/occlusion_test.py --stage occlude --workdir /occ    # H2, stage 1
+python scripts/training/predict_occlusion.py --workdir /occ --dataset 501 \
+    --arm cnn:-p:nnUNetResEncUNetLPlans --arm tf:-tr:nnUNet_PrimusV2M_Trainer
+python scripts/analysis/occlusion_test.py --stage score --workdir /occ \
+    --pred-base-cnn /preds/cnn --pred-base-tf /preds/tf --refs /labels --out results/h2
+python scripts/analysis/loso_analysis.py --metrics-table results/per_case_metrics.csv \
+    --pred cnn:/preds/loso/cnn --pred tf:/preds/loso/tf --refs /labels --out results/loso
+python scripts/analysis/boundary_tolerance.py --refs /labels \
+    --loso results/loso/loso_dice.csv --out results/h3                      # H3
+python scripts/analysis/identity_comparison.py \
+    --metrics-table results/per_case_metrics_h2b.csv --out results/h2b      # H2b
+
+# 10. Figures, gallery, verdict
+python scripts/analysis/make_figures.py --results results
+python scripts/analysis/failure_gallery.py --per-case results/h1/per_case.csv \
+    --pred-cnn /preds/cnn --pred-tf /preds/tf --refs /labels --images /images \
+    --out results/failure_gallery
+python scripts/analysis/verdict_memo.py --results results
 ```
 
 ### Disk-constrained alternative for steps 2-4
@@ -143,8 +226,23 @@ back down.
   pre-registration section 4 ("non-PDAC masses excluded from all PDAC analyses"), so the working
   PDAC-lesion analysis cohort is **478** cases, not 481; see
   `preregistration/DEVIATIONS.md` for the reconciliation.
+  Source grouping itself is no longer an unwritten manual step: `scripts/data/make_splits.py`
+  refuses a `--source-mapping` that does not cover every raw value, and freezes whichever
+  grouping was used into `config/frozen_thresholds.yaml`. As actually run, the frozen grouping
+  is `PANORAMA` (382 cases) / `MSKCC` (96 cases) — the finer Radboud-vs-UMCG split within the
+  native-PANORAMA rows noted above as still open was not resolved before this freeze, so it
+  stays lumped as `PANORAMA`. `scripts/data/make_loso_splits.py` then enforces the
+  pre-registration's escalation rule on top of whatever grouping was frozen — it errors rather
+  than emitting a leave-one-source-out fold whose held-out source is below a usable case count.
 - PrimusV2 preset (S/B/M/L) and ResEnc preset (M/L/XL) are chosen together once GPU VRAM is
-  confirmed, to satisfy the matched-budget control; recorded in the frozen config.
+  confirmed, to satisfy the matched-budget control. Notebook 03 measures peak VRAM, parameter
+  count, and step time for both arms on the same card at the same patch size, warns if the two
+  are not within 25% of each other on VRAM, and `record_arch_stats.py` freezes the numbers into
+  the config once.
+- Seed replicates need a real seed: nnU-Net has no `--seed` flag, and re-running the same
+  fold both reproduces the same initialization and overwrites the first checkpoint.
+  `src/trainers/seed_variant_trainers.py` generates one trainer class per replicate seed, which
+  fixes both at once — a different seed, and a different results directory.
 - RESOLVED (2026-08-23): nnU-Net master now also ships `nnUNet_PrimusV3S_Trainer` and
   recommends it as the new default over V2. The transformer arm stays on **PrimusV2** — the
   project's rationale for a pure-transformer arm depends on the published Primus/TMLR

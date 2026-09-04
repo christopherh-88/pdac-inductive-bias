@@ -30,7 +30,17 @@ CFG = yaml.safe_load(open(Path(__file__).parents[2] / "config" / "analysis_confi
 L = CFG["labels"]["panorama"]
 
 
-def lesion_stats(img: sitk.Image, manual: sitk.Image, auto: sitk.Image, ring_mm: float):
+def lesion_stats(img: sitk.Image, manual: sitk.Image, auto: sitk.Image, ring_widths):
+    """Volume, max in-plane diameter, and CNR at EVERY ring width, from one pass.
+
+    The distance transform dominates the cost of this script, and it does not depend on the
+    ring width — only the threshold applied to it does. Computing it once and thresholding it
+    three times is the difference between one distance transform per case and three, on the
+    single most expensive step of cohort preparation.
+
+    Returns (volume_mm3, max_inplane_diameter_mm, {ring_mm: cnr}), or None when the case has
+    no manual lesion.
+    """
     sp = np.array(manual.GetSpacing())          # (x, y, z)
     vox_mm3 = float(np.prod(sp))
     m_full = sitk.GetArrayViewFromImage(manual)  # (z, y, x)
@@ -41,12 +51,14 @@ def lesion_stats(img: sitk.Image, manual: sitk.Image, auto: sitk.Image, ring_mm:
     if not lesion_full.any():
         return None
 
-    # Crop to the lesion's bounding box + ring margin before the distance-map step: a full-res
-    # PANORAMA CT is ~512x512x150-300 (40M+ voxels), and running SignedMaurerDistanceMap over
-    # the whole volume reliably segfaulted ITK's native code in practice (confirmed on Kaggle
-    # against real cases — a synthetic 64x64x48 test volume never surfaces this).
+    # Crop to the lesion's bounding box + the largest ring margin before the distance-map step:
+    # a full-res PANORAMA CT is ~512x512x150-300 (40M+ voxels), and running
+    # SignedMaurerDistanceMap over the whole volume reliably segfaulted ITK's native code in
+    # practice (confirmed on Kaggle against real cases — a synthetic 64x64x48 test volume never
+    # surfaces this). The margin must cover every ring width computed below, not just one.
     zs, ys, xs = np.where(lesion_full)
-    mz, my, mx = (int(np.ceil(ring_mm / sp[i])) + 2 for i in (2, 1, 0))
+    max_ring_mm = max(ring_widths)
+    mz, my, mx = (int(np.ceil(max_ring_mm / sp[i])) + 2 for i in (2, 1, 0))
     z0, z1 = max(zs.min() - mz, 0), min(zs.max() + mz + 1, m_full.shape[0])
     y0, y1 = max(ys.min() - my, 0), min(ys.max() + my + 1, m_full.shape[1])
     x0, x1 = max(xs.min() - mx, 0), min(xs.max() + mx + 1, m_full.shape[2])
@@ -75,12 +87,19 @@ def lesion_stats(img: sitk.Image, manual: sitk.Image, auto: sitk.Image, ring_mm:
 
     exclude = np.isin(m, [L["pdac_lesion"]]) | np.isin(
         a, [L["pdac_lesion"], L["veins"], L["arteries"], L["pancreatic_duct"], L["common_bile_duct"]])
-    ring = (a == L["pancreas_parenchyma"]) & (dmap > 0) & (dmap <= ring_mm) & ~exclude
-    if ring.sum() < 10:
-        return volume, diam, np.nan
-    ring_hu = hu[ring].astype(np.float64)
-    cnr = abs(float(hu[lesion].mean()) - ring_hu.mean()) / (ring_hu.std() + 1e-8)
-    return volume, diam, float(cnr)
+    parenchyma = (a == L["pancreas_parenchyma"]) & (dmap > 0) & ~exclude
+    lesion_mean = float(hu[lesion].mean())
+
+    cnr_by_ring = {}
+    for ring_mm in ring_widths:
+        ring = parenchyma & (dmap <= ring_mm)
+        if ring.sum() < 10:
+            cnr_by_ring[ring_mm] = np.nan
+            continue
+        ring_hu = hu[ring].astype(np.float64)
+        cnr_by_ring[ring_mm] = float(abs(lesion_mean - ring_hu.mean())
+                                     / (ring_hu.std() + 1e-8))
+    return volume, diam, cnr_by_ring
 
 
 def main():
@@ -103,15 +122,15 @@ def main():
         # + vessels + parenchyma + duct + CBD together, so it doubles for both roles below.
         manual = sitk.ReadImage(r["manual_label"])
         auto = manual
-        row = {"case_id": r["case_id"]}
+        res = lesion_stats(img, manual, auto, ring_widths)
+        if res is None:
+            dropped.append(r["case_id"])
+            continue
+        volume, diam, cnr_by_ring = res
+        row = {"case_id": r["case_id"], "volume_mm3": volume, "max_inplane_diam_mm": diam}
         for w in ring_widths:
-            res = lesion_stats(img, manual, auto, w)
-            if res is None:
-                dropped.append(r["case_id"])
-                break
-            row["volume_mm3"], row["max_inplane_diam_mm"], row[f"cnr_ring{w}mm"] = res
-        else:
-            rows.append(row)
+            row[f"cnr_ring{w}mm"] = cnr_by_ring[w]
+        rows.append(row)
     if dropped:
         print(f"WARNING: {len(dropped)} case(s) flagged has_manual_lesion but contain no lesion "
               f"voxels in the label file — dropped from strata.csv: {dropped}")

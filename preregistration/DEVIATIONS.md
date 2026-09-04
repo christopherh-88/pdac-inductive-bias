@@ -1,8 +1,48 @@
-# Deviations from the frozen pre-registration
+# Deviations from prereg-v1
 
-`PREREGISTRATION.md` is frozen at tag `prereg-v1` and is never edited after that tag. Any
-clarification, correction, or deviation discovered after the freeze is recorded here instead,
-with a date and a pointer to the section it concerns.
+`PREREGISTRATION.md` is frozen at tag `prereg-v1` and is never edited after that tag. Nothing
+in the pre-registration or in `config/analysis_config.yaml` is ever changed in place after the
+tag; if a frozen value genuinely has to change, it becomes a new tag (`prereg-v2`, …) with the
+reason recorded here, and the paper reports both the original and the revised value. Any
+clarification, correction, or deviation discovered after the freeze goes here, with a date and
+a pointer to the section it concerns.
+
+`scripts/check_prereg_tag.sh` fails if any frozen file differs between the tag and HEAD, so a
+deviation cannot pass unnoticed — it either appears here or it breaks the check.
+
+## What counts as a deviation
+
+- Any change to `config/analysis_config.yaml`, `config/frozen_thresholds.yaml`,
+  `preregistration/PREREGISTRATION.md`, `splits/splits_final.json`, or
+  `splits/fold_assignment.csv` after the tag.
+- Training a schedule other than the frozen 1000 × 250 (including any reduced schedule run
+  for compute reasons — it is a deviation even when the reason is good, and it is reported
+  as one).
+- Switching the transformer arm away from PrimusV2, the CNN preset away from the recorded
+  one, or the identity control away from the block-replacement defined in
+  `src/trainers/primus_identity_trainer.py`.
+- Any analysis run under a rule, margin, or threshold not already in the frozen config.
+- Any case entering or leaving the cohort after the splits were frozen.
+
+## What is *not* a deviation
+
+- Bug fixes to analysis code that leave every frozen number unchanged (record the commit in
+  the run log; the frozen config is what is pre-registered, not the implementation).
+- Additional exploratory analyses, as long as they are labelled exploratory in the paper and
+  do not replace a pre-registered test.
+- Anything the pre-registration itself already provides for: the Primus v1 fallback, the
+  contrast axis being downgraded to exploratory by its own rank-stability rule, or the
+  optional model-generated-delineation training ablation.
+
+## Log
+
+| Date | Frozen item | Change | Reason | New tag |
+| --- | --- | --- | --- | --- |
+| — | — | none to date | — | — |
+
+Nothing below has changed a frozen value — each is a clarification, or a diagnostic-only
+GPU-access substitute explicitly not used to inform any frozen number. They are recorded here
+per the transparency principle above, not because they moved anything in the log table.
 
 ## H3 — no inter-rater proxy available (2026-09-02)
 
@@ -66,6 +106,15 @@ stats. `finalize_strata_from_stream.py` now detects and prints this reconciliati
 `scripts/analysis/compute_strata.py` already gave for its non-streaming path. The frozen
 `n_cases: 478` in `config/frozen_thresholds.yaml` was already computed correctly before this
 fix — the fix adds visibility, it does not change the frozen numbers.
+
+Separately: `manual_labels/` and `automatic_labels/` are mutually exclusive per case in the real
+panorama_labels repo (481 + 1756 = 2,237 in the deduplicated cohort, zero overlap, zero gaps —
+verified directly against `splits/cohort.csv`). Each is a single multi-class file (lesion +
+vessels + parenchyma + duct + CBD together), not two complementary files to combine — so
+`compute_strata.py` and `kaggle_stream_cohort.py` both read the manual-side file for both the
+"manual" and "automatic" roles in the CNR ring computation. A version of `compute_strata.py`
+that reads `automatic_label` as a separate file crashes on every manually-delineated case, since
+that column is empty by construction whenever `manual_label` is populated.
 
 ## Phase 1 real-data training preview, from the same Kaggle GPU substitute (2026-09-03)
 

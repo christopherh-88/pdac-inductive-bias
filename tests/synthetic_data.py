@@ -17,9 +17,21 @@ real DIAGNijmegen/panorama_labels repo (482 + 1756 = 2238 total cases, zero over
 directory holds a single multi-class segmentation (lesion + veins + arteries + parenchyma +
 duct + CBD all in one file), not two complementary partial-label files to be combined.
 
-Also writes one exact-content duplicate case (mimicking MSD/NIH cases redistributed inside
-PANORAMA) so deduplicate.py's content-hash stage has something real to catch.
+Also writes two duplicate cases, mimicking MSD/NIH scans redistributed inside PANORAMA, so
+deduplicate.py has something real to catch:
+
+  - a byte-for-byte file copy, and
+  - a re-encoded copy holding the same values at a different dtype.
+
+Both are made with `shutil.copy` or an explicit dtype cast rather than by round-tripping the
+image through SimpleITK. An earlier version did round-trip it, on the assumption that
+ReadImage -> WriteImage preserves voxel data. It does on some platforms and not others: on
+Kaggle the round-trip changed the data, so the "duplicate" was not one, and the test failed
+for a reason that had nothing to do with the code under test. A fixture must not depend on
+library behaviour that varies by platform — that is the thing it is supposed to be testing
+around.
 """
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -106,16 +118,27 @@ def generate(data_root: Path, n_patients=30, seed=20260823):
         _make_case(img_dir, manual_dir, auto_dir, case_id, 0, 0, seed=2000 + k)
         info_rows.append({"case_id": case_id, "source": "NIH"})
 
-    # One exact-content duplicate, no manual label of its own (as if redistributed under another
-    # ID and only auto-segmented there). dup_src (p=0) has a lesion, so its combined seg file
-    # lives in manual_dir — mirror that content into auto_dir under the new id.
+    # Two duplicates, no manual label of their own (as if redistributed under another ID and
+    # only auto-segmented there). dup_src (p=0) has a lesion, so its combined seg file lives in
+    # manual_dir — source from there and file the duplicates' copies under auto_dir instead.
     dup_src = info_rows[0]["case_id"]
-    dup_id = "999001_00001"
-    sitk.WriteImage(sitk.ReadImage(str(img_dir / f"{dup_src}_0000.nii.gz")),
-                    str(img_dir / f"{dup_id}_0000.nii.gz"), useCompression=True)
-    sitk.WriteImage(sitk.ReadImage(str(manual_dir / f"{dup_src}.nii.gz")),
-                    str(auto_dir / f"{dup_id}.nii.gz"), useCompression=True)
-    info_rows.append({"case_id": dup_id, "source": "MSKCC"})
+    src_img = img_dir / f"{dup_src}_0000.nii.gz"
+    src_seg = manual_dir / f"{dup_src}.nii.gz"
+
+    # (a) A byte-for-byte copy. Unambiguously a duplicate on every platform.
+    shutil.copy(src_img, img_dir / "999001_00001_0000.nii.gz")
+    shutil.copy(src_seg, auto_dir / "999001_00001.nii.gz")
+    info_rows.append({"case_id": "999001_00001", "source": "MSKCC"})
+
+    # (b) A re-encoded copy: same values, stored as float64 instead of float32. This is what a
+    # redistribution actually looks like, and it is the case a byte-level hash misses.
+    reencoded = sitk.ReadImage(str(src_img))
+    arr64 = sitk.GetArrayFromImage(reencoded).astype(np.float64)
+    out = sitk.GetImageFromArray(arr64)
+    out.CopyInformation(reencoded)
+    sitk.WriteImage(out, str(img_dir / "999002_00001_0000.nii.gz"), useCompression=True)
+    shutil.copy(src_seg, auto_dir / "999002_00001.nii.gz")
+    info_rows.append({"case_id": "999002_00001", "source": "MSKCC"})
 
     pd.DataFrame(info_rows).rename(columns={"case_id": "Case ID", "source": "Source"}).to_excel(
         labels_root / "clinical_information.xlsx", index=False)
@@ -163,3 +186,88 @@ def make_predictions(cohort_csv: Path, manual_dir: Path, out_dir: Path, seed=42)
             sitk.WriteImage(out_img, str(d / f"{cid}.nii.gz"), useCompression=True)
 
     return refs_dir, cnn_dir, tf_dir
+
+
+def _degrade(arr, iterations, rng, flip_p=0.0005):
+    """Erode a mask by `iterations` and add a little speckle, the same way make_predictions
+    builds its designed patterns — so every synthetic prediction set in the tests is produced
+    by one mechanism with one knob."""
+    out = ndimage.binary_erosion(arr, iterations=iterations).astype(np.uint8) if iterations else arr.copy()
+    flip = rng.random(out.shape) < flip_p
+    out[flip] = 1 - out[flip]
+    return out.astype(np.uint8)
+
+
+def _write_like(arr, ref_img, path):
+    img = sitk.GetImageFromArray(arr)
+    img.CopyInformation(ref_img)
+    sitk.WriteImage(img, str(path), useCompression=True)
+
+
+def make_identity_predictions(tf_dir: Path, out_dir: Path, extra_erosion=0):
+    """H2b identity-control predictions, derived from the transformer arm's own predictions so
+    the two fixtures differ in exactly one way.
+
+    extra_erosion=0 copies them: every per-case difference is exactly zero, so the stratified
+    map is trivially the same map and identity_comparison.py must read "attention is not the
+    cause". extra_erosion>0 erodes every prediction instead, degrading every cell, and the same
+    script must read the opposite. Both branches are exercised, so a hard-wired verdict fails.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for f in sorted(tf_dir.glob("*.nii.gz")):
+        if not extra_erosion:
+            # A byte copy, not a SimpleITK round-trip: the "reproduced" fixture asserts an
+            # exactly zero paired difference, and a round-trip is not guaranteed to preserve
+            # data on every platform. Same reason the duplicate fixtures are file copies.
+            shutil.copy(f, out_dir / f.name)
+            continue
+        img = sitk.ReadImage(str(f))
+        arr = sitk.GetArrayFromImage(img).astype(np.uint8)
+        arr = ndimage.binary_erosion(arr, iterations=extra_erosion).astype(np.uint8)
+        _write_like(arr, img, out_dir / f.name)
+    return out_dir
+
+
+def make_loso_predictions(cohort_csv: Path, manual_dir: Path, out_dir: Path,
+                          source_col="source", seed=11):
+    """Leave-one-source-out predictions laid out as loso_analysis.py expects:
+    <out_dir>/<arm>/loso_<Source>/<case>.nii.gz. Designed pattern: the transformer degrades
+    much more under source shift than the CNN, so the H3 share-inside-floor statistic has a
+    real contrast to find."""
+    cohort = pd.read_csv(cohort_csv)
+    manual = cohort[cohort["has_manual_lesion"]]
+    rng = np.random.default_rng(seed)
+    extra = {"cnn": 1, "tf": 3}      # extra erosion iterations under source shift
+    for arm, it in extra.items():
+        for source, g in manual.groupby(source_col):
+            d = out_dir / arm / f"loso_{source}"
+            d.mkdir(parents=True, exist_ok=True)
+            for cid in g["case_id"]:
+                seg = sitk.ReadImage(str(manual_dir / f"{cid}.nii.gz"))
+                arr = (sitk.GetArrayFromImage(seg) == 1).astype(np.uint8)
+                vol = arr.sum()
+                base = ({"cnn": 0, "tf": 2} if vol < 300 else
+                        {"cnn": 1, "tf": 1} if vol < 1500 else {"cnn": 3, "tf": 0})[arm]
+                _write_like(_degrade(arr, base + it, rng), seg, d / f"{cid}.nii.gz")
+    return out_dir
+
+
+def make_seed_predictions(fold_assignment_csv: Path, manual_dir: Path, out_dir: Path,
+                          fold=0, seeds=(1, 2), base_seed=23):
+    """Seed replicates on one fold: the same designed CNN pattern, re-speckled per seed, so
+    the only variation across seeds is initialization-like noise. Returns {seed: dir}."""
+    fa = pd.read_csv(fold_assignment_csv)
+    cases = fa.loc[fa["fold"] == fold, "case_id"].tolist()
+    dirs = {}
+    for s in seeds:
+        d = out_dir / f"seed{s}"
+        d.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(base_seed + int(s))
+        for cid in cases:
+            seg = sitk.ReadImage(str(manual_dir / f"{cid}.nii.gz"))
+            arr = (sitk.GetArrayFromImage(seg) == 1).astype(np.uint8)
+            vol = arr.sum()
+            cnn_iter = 0 if vol < 300 else (1 if vol < 1500 else 3)
+            _write_like(_degrade(arr, cnn_iter, rng, flip_p=0.0008), seg, d / f"{cid}.nii.gz")
+        dirs[s] = d
+    return dirs

@@ -3,6 +3,8 @@
 # Run after verify_pipeline.sh has passed and prereg-v1 is tagged.
 set -euo pipefail
 
+# No --npz on any training command: it dumps the full softmax map per validation case, which
+# only cross-configuration ensembling needs, and this study evaluates single configurations.
 DATASET=${DATASET:-501}
 CNN_PLANS=${CNN_PLANS:?Set CNN_PLANS per frozen config}
 PRIMUS_TRAINER=${PRIMUS_TRAINER:?Set PRIMUS_TRAINER per frozen config}
@@ -14,14 +16,14 @@ for FOLD in 0 1 2 3 4; do
   echo ">> [CNN] fold $FOLD"
   RUN_ID=$(python scripts/training/log_run.py start --arm cnn --fold "$FOLD" \
     --nnunet-commit "$NNUNET_COMMIT" --trainer-or-plans "$CNN_PLANS" --gpu "$GPU_NAME")
-  nnUNetv2_train "$DATASET" 3d_fullres "$FOLD" -p "$CNN_PLANS" --npz \
+  nnUNetv2_train "$DATASET" 3d_fullres "$FOLD" -p "$CNN_PLANS" \
     && python scripts/training/log_run.py finish --run-id "$RUN_ID" --status completed \
     || { python scripts/training/log_run.py finish --run-id "$RUN_ID" --status crashed; exit 1; }
 
   echo ">> [Transformer] fold $FOLD"
   RUN_ID=$(python scripts/training/log_run.py start --arm transformer --fold "$FOLD" \
     --nnunet-commit "$NNUNET_COMMIT" --trainer-or-plans "$PRIMUS_TRAINER" --gpu "$GPU_NAME")
-  nnUNetv2_train "$DATASET" 3d_fullres "$FOLD" -tr "$PRIMUS_TRAINER" --npz \
+  nnUNetv2_train "$DATASET" 3d_fullres "$FOLD" -tr "$PRIMUS_TRAINER" \
     && python scripts/training/log_run.py finish --run-id "$RUN_ID" --status completed \
     || { python scripts/training/log_run.py finish --run-id "$RUN_ID" --status crashed; exit 1; }
 done
