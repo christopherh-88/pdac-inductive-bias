@@ -304,6 +304,18 @@ class _TimeBoxedMixin:
             # silently find nothing and restart from scratch, discarding this session's progress.
             # Writing checkpoint_final.pth here (the name --c checks first) makes this session's
             # stop point look like a normal completed run to nnU-Net's own resume logic.
+            #
+            # save_checkpoint() itself stores 'current_epoch': self.current_epoch + 1, because in
+            # nnU-Net's OWN on_epoch_end() it is always called BEFORE that method's trailing
+            # `self.current_epoch += 1`. We just ran super().on_epoch_end() above, which already
+            # did that increment -- so calling save_checkpoint() now double-counts it, saving an
+            # epoch number one past what self.logger actually has entries for. On resume, nnU-Net
+            # reads that inflated current_epoch, starts an epoch whose index was never logged, and
+            # immediately crashes in on_validation_epoch_end() with IndexError (get_value() indexes
+            # my_fantastic_logging[key] by raw list position). Undo the increment just for this
+            # save call so the compensation inside save_checkpoint() lines back up; the process
+            # exits right after via SystemExit so current_epoch never needs restoring.
+            self.current_epoch -= 1
             self.save_checkpoint(os.path.join(self.output_folder, "checkpoint_final.pth"))
             reason = (f"TARGET EPOCHS REACHED ({self.current_epoch} >= {TARGET_EPOCHS_PER_ARM})"
                       if target_hit else f"TIME BUDGET REACHED ({elapsed:.0f}s > {PER_ARM_BUDGET_S}s)")
@@ -341,6 +353,32 @@ def _checkpoint_exists(results_dir, dataset_name, trainer_name, plans_id):
     run_dir = (Path(results_dir) / dataset_name /
                f"{trainer_name}__{plans_id}__3d_fullres" / "fold_0")
     return (run_dir / "checkpoint_latest.pth").exists() or (run_dir / "checkpoint_final.pth").exists()
+
+
+def step4b_repair_inflated_checkpoints(results_dir, dataset_name, arm_specs):
+    """One-time self-heal for checkpoints written by the pre-fix _TimeBoxedMixin.on_epoch_end():
+    it called self.save_checkpoint() AFTER super().on_epoch_end() had already incremented
+    self.current_epoch, so save_checkpoint()'s own '+1' compensation (correct only when called
+    from inside nnU-Net's vanilla on_epoch_end, before that increment) double-counted, inflating
+    the saved current_epoch one epoch past what self.logger's per-epoch lists actually contain.
+    Loading such a checkpoint makes nnU-Net start an epoch that was never logged and crash in
+    on_validation_epoch_end() with IndexError the moment it tries to read the previous epoch's
+    value. Detect and fix that here (current_epoch != logged-epoch-count) rather than relying on
+    every already-shipped checkpoint having been produced by the fixed code."""
+    import torch
+    for trainer_name, plans_id in arm_specs:
+        ckpt_path = (Path(results_dir) / dataset_name /
+                     f"{trainer_name}__{plans_id}__3d_fullres" / "fold_0" / "checkpoint_final.pth")
+        if not ckpt_path.exists():
+            continue
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        logged_epochs = len(ckpt["logging"]["mean_fg_dice"])
+        if ckpt["current_epoch"] != logged_epochs:
+            log(f"repairing inflated checkpoint {ckpt_path}: "
+                f"current_epoch={ckpt['current_epoch']} != logged_epochs={logged_epochs}, "
+                f"correcting current_epoch -> {logged_epochs}")
+            ckpt["current_epoch"] = logged_epochs
+            torch.save(ckpt, ckpt_path)
 
 
 def step5_train_arm(env, plans_id, trainer_name, arm_label, budget_s, primus_base=None):
@@ -424,6 +462,11 @@ def main():
 
     tf_plans = "nnUNetPlans" if (Path(env["nnUNet_preprocessed"]) / DATASET_NAME / "nnUNetPlans.json").exists() \
         else "nnUNetResEncUNetMPlans"
+
+    step4b_repair_inflated_checkpoints(env["nnUNet_results"], DATASET_NAME, [
+        ("nnUNetTrainer_TierALite", "nnUNetResEncUNetMPlans"),
+        ("nnUNet_PrimusV2_TierALite", tf_plans),
+    ])
 
     arms = []
     cnn_result = step5_train_arm(env, "nnUNetResEncUNetMPlans", "nnUNetTrainer_TierALite",

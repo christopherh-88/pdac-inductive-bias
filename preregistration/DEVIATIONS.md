@@ -169,3 +169,37 @@ before exiting. For the already-completed first session (which predates this fix
 repackaging as the `pdac-tier-a-lite-checkpoints` Dataset -- the underlying saved state dict is
 identical regardless of which filename `save_checkpoint()` is given, so this recovers the same
 progress the code-level fix would have produced automatically.
+
+## Phase 1 training: checkpoint off-by-one crashed the first real resume (2026-09-05)
+
+Progress since the previous entry: the fix above (explicit `checkpoint_final.pth` save) let a
+full session complete cleanly on both arms via `--c` resume -- CNN (`cnn_resenc_m`) reached
+epoch 117/300 (pseudo-dice climbing from ~0.24 at epoch 0 to a ~0.42-0.45 plateau from roughly
+epoch 40 onward), and the transformer (`transformer_primusv2s`) reached epoch 67/300 (pseudo-dice
+far noisier and lower, ~0.00-0.17, consistent with a heavier architecture learning much more
+slowly on only 25 real training cases). Both were genuine time-budget stops (`returncode: 0`),
+not crashes.
+
+The *next* session's `--c` resume then crashed immediately on both arms (`IndexError: list index
+out of range` inside nnU-Net's own `nnunet_logger.get_value`, within seconds of starting the
+first post-resume epoch). Root cause: `_TimeBoxedMixin.on_epoch_end` calls
+`super().on_epoch_end()` (which increments `self.current_epoch`) and *then* calls
+`self.save_checkpoint(...)`. nnU-Net's `save_checkpoint()` itself stores
+`'current_epoch': self.current_epoch + 1`, because in nnU-Net's own vanilla `on_epoch_end()` it
+is always called *before* that method's trailing increment -- the `+1` is a compensation for
+that ordering. Calling it *after* the increment (as the mixin does) double-counts, saving an
+epoch number one past what `self.logger`'s per-epoch lists actually contain. On resume, nnU-Net
+starts an epoch that was never logged and crashes the moment it tries to read the previous
+epoch's value for the EMA pseudo-dice update.
+
+This means the *very first* checkpoint written by the (then-new) explicit-save fix above was
+already corrupted this way -- session 2's checkpoint_final.pth for both arms had
+`current_epoch` inflated by exactly one epoch (117 saved vs. 116 logged for CNN; 68 saved vs. 67
+logged for the transformer). Fixed in `scripts/verify/phase1_train_lite.py` two ways: (1) the
+mixin now decrements `self.current_epoch` immediately before the save call, undoing the
+already-applied increment so `save_checkpoint()`'s own `+1` lines up correctly; (2) a new
+`step4b_repair_inflated_checkpoints` runs at the start of every session and self-heals any
+already-shipped checkpoint whose saved `current_epoch` does not match its logger's actual
+entry count (rather than requiring the already-corrupted `pdac-tier-a-lite-checkpoints` Dataset
+to be manually patched) -- so the existing session-2 checkpoints resume correctly with no data
+loss, no manual `.pth` surgery, and no epochs re-trained.
