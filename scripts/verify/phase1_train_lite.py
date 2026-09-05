@@ -53,6 +53,13 @@ DATASET_NAME = "Dataset601_PDACTierALite"
 SESSION_BUDGET_S = int(os.environ.get("SESSION_BUDGET_S", 7 * 3600))
 PER_ARM_BUDGET_S = SESSION_BUDGET_S // 2
 
+# The CNN arm (~130s/epoch) reaches any given epoch count far faster than the transformer arm
+# (~230s/epoch). Splitting the session budget evenly wastes CNN time once it's already past this
+# target -- that time is better spent on the slower, more diagnostically important transformer arm.
+# Once CNN hits TARGET_EPOCHS_PER_ARM it checkpoints and exits early (see _TimeBoxedMixin), and
+# main() hands whatever budget it didn't use to the transformer arm for this same session.
+TARGET_EPOCHS_PER_ARM = int(os.environ.get("TARGET_EPOCHS_PER_ARM", 300))
+
 def _find_input_dataset(slug):
     """Kaggle's kernel input mount layout has varied across environments (seen: flat
     /kaggle/input/<slug>, and nested /kaggle/input/datasets/<owner>/<slug>); search rather than
@@ -261,6 +268,7 @@ from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
 
 PER_ARM_BUDGET_S = int(os.environ["PER_ARM_BUDGET_S"])
+TARGET_EPOCHS_PER_ARM = int(os.environ.get("TARGET_EPOCHS_PER_ARM", 10 ** 9))
 
 
 class _TimeBoxedMixin:
@@ -282,7 +290,11 @@ class _TimeBoxedMixin:
     def on_epoch_end(self):
         super().on_epoch_end()
         elapsed = time.time() - self._arm_start_time
-        if elapsed > PER_ARM_BUDGET_S:
+        budget_hit = elapsed > PER_ARM_BUDGET_S
+        # current_epoch is post-increment here (base on_epoch_end() already bumped it), so it
+        # equals the number of epochs completed so far -- comparable directly to a target count.
+        target_hit = self.current_epoch >= TARGET_EPOCHS_PER_ARM
+        if budget_hit or target_hit:
             # nnU-Net's own on_epoch_end() only writes checkpoint_latest.pth every
             # self.save_every (default 50) epochs, and checkpoint_final.pth only at the true end
             # of training -- so a session that stops early (as this one always does) can exit
@@ -293,10 +305,11 @@ class _TimeBoxedMixin:
             # Writing checkpoint_final.pth here (the name --c checks first) makes this session's
             # stop point look like a normal completed run to nnU-Net's own resume logic.
             self.save_checkpoint(os.path.join(self.output_folder, "checkpoint_final.pth"))
+            reason = (f"TARGET EPOCHS REACHED ({self.current_epoch} >= {TARGET_EPOCHS_PER_ARM})"
+                      if target_hit else f"TIME BUDGET REACHED ({elapsed:.0f}s > {PER_ARM_BUDGET_S}s)")
             self.print_to_log_file(
-                f"TIME BUDGET REACHED ({elapsed:.0f}s > {PER_ARM_BUDGET_S}s) after epoch "
-                f"{self.current_epoch} -- stopping cleanly for this session; "
-                "checkpoint_final.pth written, resume with --c next session.")
+                f"{reason} after epoch {self.current_epoch} -- stopping cleanly for this "
+                "session; checkpoint_final.pth written, resume with --c next session.")
             raise SystemExit(0)
 
 
@@ -330,10 +343,11 @@ def _checkpoint_exists(results_dir, dataset_name, trainer_name, plans_id):
     return (run_dir / "checkpoint_latest.pth").exists() or (run_dir / "checkpoint_final.pth").exists()
 
 
-def step5_train_arm(env, plans_id, trainer_name, arm_label, primus_base=None):
-    log(f"=== step 5: train {arm_label} ({trainer_name} / {plans_id}) ===")
+def step5_train_arm(env, plans_id, trainer_name, arm_label, budget_s, primus_base=None):
+    log(f"=== step 5: train {arm_label} ({trainer_name} / {plans_id}), budget={budget_s:.0f}s ===")
     run_env = env.copy()
-    run_env["PER_ARM_BUDGET_S"] = str(PER_ARM_BUDGET_S)
+    run_env["PER_ARM_BUDGET_S"] = str(int(budget_s))
+    run_env["TARGET_EPOCHS_PER_ARM"] = str(TARGET_EPOCHS_PER_ARM)
     run_env["nnUNet_compile"] = "False"  # same triton/torch-2.4.1 mismatch as phase0_gpu_verify.py
     # v6 attempt: capped nnUNet_n_proc_DA=1 (one augmentation worker process instead of the
     # default ~12). Still crashed identically -- whole container reset, zero output, at the exact
@@ -372,7 +386,7 @@ def step5_train_arm(env, plans_id, trainer_name, arm_label, primus_base=None):
     # case a single iteration is still unexpectedly slow, so we don't re-create the exact race that
     # killed the transformer arm in v9.
     rc = run(cmd, OUT / f"log_train_{arm_label}.txt", env=run_env, check=False,
-              timeout=PER_ARM_BUDGET_S + 3600)
+              timeout=budget_s + 3600)
     wall_s = time.time() - t0
     result = {"arm": arm_label, "trainer": trainer_name, "plans": plans_id, "resumed": resume,
               "returncode": rc, "wall_seconds": wall_s}
@@ -412,9 +426,19 @@ def main():
         else "nnUNetResEncUNetMPlans"
 
     arms = []
-    arms.append(step5_train_arm(env, "nnUNetResEncUNetMPlans", "nnUNetTrainer_TierALite", "cnn_resenc_m"))
+    cnn_result = step5_train_arm(env, "nnUNetResEncUNetMPlans", "nnUNetTrainer_TierALite",
+                                  "cnn_resenc_m", budget_s=PER_ARM_BUDGET_S)
+    arms.append(cnn_result)
+    # If CNN finished under budget (hit TARGET_EPOCHS_PER_ARM early, or genuinely completed),
+    # hand its unused time to the transformer arm this same session instead of leaving it idle.
+    cnn_leftover = max(0.0, PER_ARM_BUDGET_S - cnn_result["wall_seconds"])
+    transformer_budget = PER_ARM_BUDGET_S + cnn_leftover
+    if cnn_leftover > 0:
+        log(f"CNN arm used {cnn_result['wall_seconds']:.0f}s of its {PER_ARM_BUDGET_S}s budget; "
+            f"handing {cnn_leftover:.0f}s leftover to the transformer arm "
+            f"(budget now {transformer_budget:.0f}s)")
     arms.append(step5_train_arm(env, tf_plans, "nnUNet_PrimusV2_TierALite", "transformer_primusv2s",
-                                 primus_base="nnUNet_PrimusV2S_Trainer"))
+                                 budget_s=transformer_budget, primus_base="nnUNet_PrimusV2S_Trainer"))
     results["arms"] = arms
 
     session_record = {
