@@ -355,6 +355,21 @@ def _checkpoint_exists(results_dir, dataset_name, trainer_name, plans_id):
     return (run_dir / "checkpoint_latest.pth").exists() or (run_dir / "checkpoint_final.pth").exists()
 
 
+def _arm_already_at_target(results_dir, dataset_name, trainer_name, plans_id, target_epochs):
+    """True once an arm's checkpoint_final.pth already records current_epoch >= target_epochs.
+    Without this check, a session launches nnUNetv2_train --c for an already-finished arm anyway
+    -- it immediately re-triggers _TimeBoxedMixin's target_hit exit after one wasted epoch (plus
+    subprocess/checkpoint-load startup), a few minutes every session for the rest of this study
+    that would otherwise go to whichever arm still has epochs left."""
+    ckpt_path = (Path(results_dir) / dataset_name /
+                 f"{trainer_name}__{plans_id}__3d_fullres" / "fold_0" / "checkpoint_final.pth")
+    if not ckpt_path.exists():
+        return False
+    import torch
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    return ckpt["current_epoch"] >= target_epochs
+
+
 def step4b_repair_inflated_checkpoints(results_dir, dataset_name, arm_specs):
     """One-time self-heal for checkpoints written by the pre-fix _TimeBoxedMixin.on_epoch_end():
     it called self.save_checkpoint() AFTER super().on_epoch_end() had already incremented
@@ -468,9 +483,19 @@ def main():
         ("nnUNet_PrimusV2_TierALite", tf_plans),
     ])
 
+    def _skipped_result(arm_label, trainer_name, plans_id):
+        log(f"{arm_label} already reached TARGET_EPOCHS_PER_ARM ({TARGET_EPOCHS_PER_ARM}) -- "
+            "skipping training this session, handing its full budget to the other arm")
+        return {"arm": arm_label, "trainer": trainer_name, "plans": plans_id, "resumed": True,
+                "returncode": 0, "wall_seconds": 0.0, "skipped_already_at_target": True}
+
     arms = []
-    cnn_result = step5_train_arm(env, "nnUNetResEncUNetMPlans", "nnUNetTrainer_TierALite",
-                                  "cnn_resenc_m", budget_s=PER_ARM_BUDGET_S)
+    if _arm_already_at_target(env["nnUNet_results"], DATASET_NAME, "nnUNetTrainer_TierALite",
+                              "nnUNetResEncUNetMPlans", TARGET_EPOCHS_PER_ARM):
+        cnn_result = _skipped_result("cnn_resenc_m", "nnUNetTrainer_TierALite", "nnUNetResEncUNetMPlans")
+    else:
+        cnn_result = step5_train_arm(env, "nnUNetResEncUNetMPlans", "nnUNetTrainer_TierALite",
+                                      "cnn_resenc_m", budget_s=PER_ARM_BUDGET_S)
     arms.append(cnn_result)
     # If CNN finished under budget (hit TARGET_EPOCHS_PER_ARM early, or genuinely completed),
     # hand its unused time to the transformer arm this same session instead of leaving it idle.
@@ -480,8 +505,15 @@ def main():
         log(f"CNN arm used {cnn_result['wall_seconds']:.0f}s of its {PER_ARM_BUDGET_S}s budget; "
             f"handing {cnn_leftover:.0f}s leftover to the transformer arm "
             f"(budget now {transformer_budget:.0f}s)")
-    arms.append(step5_train_arm(env, tf_plans, "nnUNet_PrimusV2_TierALite", "transformer_primusv2s",
-                                 budget_s=transformer_budget, primus_base="nnUNet_PrimusV2S_Trainer"))
+
+    if _arm_already_at_target(env["nnUNet_results"], DATASET_NAME, "nnUNet_PrimusV2_TierALite",
+                              tf_plans, TARGET_EPOCHS_PER_ARM):
+        transformer_result = _skipped_result("transformer_primusv2s", "nnUNet_PrimusV2_TierALite", tf_plans)
+    else:
+        transformer_result = step5_train_arm(env, tf_plans, "nnUNet_PrimusV2_TierALite",
+                                             "transformer_primusv2s", budget_s=transformer_budget,
+                                             primus_base="nnUNet_PrimusV2S_Trainer")
+    arms.append(transformer_result)
     results["arms"] = arms
 
     session_record = {
