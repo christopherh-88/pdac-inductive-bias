@@ -235,3 +235,37 @@ cases for both arms) and `scripts/analysis/phase1_eval_lite.py` (local CPU scori
 truth with the same frozen metrics used elsewhere in this repo) are ready to run against these
 final checkpoints -- neither has been run against real data yet, only verified against synthetic
 data and a source-level CLI cross-check.
+
+## Phase 1 lite eval: CNN outperforms transformer on the 7-case held-out preview (2026-09-08)
+
+Both arms' final checkpoints were run through `phase1_predict_lite.py` (CPU inference,
+`--disable_tta`, `checkpoint_best.pth`) on all 7 fold-0 held-out cases, then scored with
+`phase1_eval_lite.py` against `labelsTr` using the same frozen metric definitions
+(`scripts/analysis/metrics.py`) as the real Tier A pipeline. Results (`n=7` cases each):
+
+| arm | dice | nsd@2mm | hd95 | detection sensitivity | fp/case |
+| --- | --- | --- | --- | --- | --- |
+| CNN (`cnn_resenc_m`) | 0.286 | 0.285 | 102.0 | 0.571 | 1.0 |
+| Transformer (`transformer_primusv2s`) | 0.016 | 0.025 | 209.4 | 0.143 | 12.0 |
+
+The gap is much larger than the ~0.10 gap in final training-time pseudo-dice (0.50 vs 0.40,
+previous entry), so it was investigated rather than taken at face value. Direct voxel-level
+inspection of one case (`100009_00001`) confirmed: prediction/reference shape, spacing, and
+affine matched exactly (ruling out a resampling/orientation bug), and the transformer's largest
+predicted component did sit near the true lesion centroid but massively over-segmented it
+(5717 voxels vs. a 1533-voxel true lesion), plus scattered several additional false-positive
+components elsewhere in the volume. A connected-component size-threshold sweep (pruning small
+predicted components before scoring, thresholds 0/50/100/200/500 voxels) cut mean FP/case from
+24.7 to 6.9 but left mean dice essentially flat (0.016 to 0.015) and *reduced* detection
+sensitivity at higher thresholds, because the true-lesion component itself is often small and
+gets pruned along with the noise. This rules out "good prediction obscured by a few stray
+blobs" as the explanation.
+
+Conclusion: this reflects genuinely poor spatial localization by the transformer arm on this
+32-case staging pool / 300-epoch budget, not a pipeline or scoring bug, and not something
+post-processing can recover. Consistent with the inductive-bias hypothesis under test: a
+heavier, lower-inductive-bias architecture (PrimusV2S) needs substantially more data than a
+CNN with strong spatial priors to reach comparable held-out localization at this cohort size.
+As with every entry in this section, this is a diagnostic-only preview (7 held-out cases, single
+fold, single P100) and does not inform or supersede any frozen threshold; it motivates running
+the real Tier A comparison on the full 478-case cohort rather than substituting for it.

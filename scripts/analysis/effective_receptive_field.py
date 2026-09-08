@@ -172,7 +172,10 @@ def load_nnunet_network(checkpoint, dataset, configuration, plans, fold, trainer
         config_manager.network_arch_init_kwargs_req_import, num_input_channels,
         num_output_channels, allow_init=False, deep_supervision=False)
 
-    ckpt = torch.load(checkpoint, map_location="cpu")
+    # weights_only=False: nnU-Net checkpoints store numpy scalars (e.g. best-EMA dice)
+    # alongside the state dict, which torch>=2.6's default weights_only=True rejects.
+    # Safe here because these are our own training runs' checkpoints, not third-party files.
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
     state_dict = ckpt.get("network_weights", ckpt)
     network.load_state_dict(state_dict)
     patch_size = config_manager.patch_size  # (X, Y, Z) in nnU-Net's convention
