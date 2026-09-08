@@ -30,6 +30,7 @@ Usage:
       --plans nnUNetResEncUNetLPlans --fold 0 --out results/erf_cnn.yaml
 """
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
@@ -139,12 +140,22 @@ def self_test():
 
 
 def load_nnunet_network(checkpoint, dataset, configuration, plans, fold, trainer="nnUNetTrainer"):
-    """Builds the trained ResEnc network from an nnU-Net checkpoint using nnU-Net's own
-    architecture builder, so the ERF is measured on the exact network that was trained --
-    not a re-implementation. Requires nnunetv2 installed and nnUNet_preprocessed/results set.
+    """Builds the trained network from an nnU-Net checkpoint using the exact trainer class that
+    produced it, so the ERF is measured on the exact network that was trained -- not a
+    re-implementation. Requires nnunetv2 installed and nnUNet_preprocessed/results set.
+
+    The trainer class matters, not just the plans: nnUNetTrainer's own build_network_architecture
+    goes through the generic get_network_from_plans path (fine for ResEnc/CNN arms), but PrimusV2
+    trainers override build_network_architecture entirely to construct the transformer (patch
+    embedding, attention blocks) -- get_network_from_plans cannot build that network at all, it
+    silently builds a PlainConvUNet instead and load_state_dict then fails on every key. Reading
+    the trainer name straight out of the checkpoint (nnU-Net writes it to every checkpoint as
+    'trainer_name') and locating that exact class is what makes this work for both arms.
     """
     from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
     from nnunetv2.paths import nnUNet_preprocessed
+    from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
+    import nnunetv2
     import json as _json
 
     # nnU-Net's directories are named Dataset<ID>_<Name> ("Dataset501_PDAC"), not Dataset<ID>,
@@ -164,24 +175,32 @@ def load_nnunet_network(checkpoint, dataset, configuration, plans, fold, trainer
     dataset_json = _json.load(open(dataset_json_path))
     config_manager = plans_manager.get_configuration(configuration)
 
-    from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
-    num_input_channels = len(dataset_json["channel_names"])
-    num_output_channels = len(dataset_json["labels"])
-    network = get_network_from_plans(
-        config_manager.network_arch_class_name, config_manager.network_arch_init_kwargs,
-        config_manager.network_arch_init_kwargs_req_import, num_input_channels,
-        num_output_channels, allow_init=False, deep_supervision=False)
-
     # weights_only=False: nnU-Net checkpoints store numpy scalars (e.g. best-EMA dice)
     # alongside the state dict, which torch>=2.6's default weights_only=True rejects.
     # Safe here because these are our own training runs' checkpoints, not third-party files.
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    trainer_name = ckpt.get("trainer_name", trainer)
+    trainer_class = recursive_find_python_class(
+        os.path.join(nnunetv2.__path__[0], "training", "nnUNetTrainer"), trainer_name,
+        current_module="nnunetv2.training.nnUNetTrainer")
+    if trainer_class is None:
+        raise SystemExit(f"Could not locate trainer class '{trainer_name}' (from the "
+                          f"checkpoint) under nnunetv2.training.nnUNetTrainer -- if it was a "
+                          f"dynamically-installed variant (e.g. the TierALite trainers), it "
+                          f"must be installed into this environment's nnunetv2 package first.")
+
+    num_input_channels = len(dataset_json["channel_names"])
+    num_output_channels = len(dataset_json["labels"])
+    network = trainer_class.build_network_architecture(
+        plans_manager, config_manager, num_input_channels, num_output_channels,
+        enable_deep_supervision=False)
+
     state_dict = ckpt.get("network_weights", ckpt)
     network.load_state_dict(state_dict)
     patch_size = config_manager.patch_size  # (X, Y, Z) in nnU-Net's convention
     spacing = config_manager.spacing        # (X, Y, Z) mm
     # measure_erf expects (Z, Y, X) to match numpy array axis order used throughout this repo
-    return network, tuple(reversed(patch_size)), tuple(reversed(spacing))
+    return network, tuple(reversed(patch_size)), tuple(reversed(spacing)), trainer_name
 
 
 def main():
@@ -203,14 +222,15 @@ def main():
     if not args.nnunet_checkpoint:
         raise SystemExit("Provide --nnunet-checkpoint (or run --self-test for the no-GPU check)")
 
-    network, patch_shape_zyx, spacing_zyx = load_nnunet_network(
+    network, patch_shape_zyx, spacing_zyx, trainer_name = load_nnunet_network(
         args.nnunet_checkpoint, args.dataset, args.configuration, args.plans, args.fold)
     shells = [tuple(s) for s in CFG["hypotheses"]["h2"]["occlusion_shells_mm"]]
     result = measure_erf(network, patch_shape_zyx, spacing_zyx, shell_bounds_mm=shells)
+    result["trainer_name"] = trainer_name
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     yaml.safe_dump(result, open(args.out, "w"), sort_keys=False)
-    print(f"CNN effective receptive field: 95%-mass radius = "
+    print(f"{trainer_name} effective receptive field: 95%-mass radius = "
           f"{result['erf_radius_mm_95pct']:.1f} mm (50%={result['erf_radius_mm_50pct']:.1f}, "
           f"90%={result['erf_radius_mm_90pct']:.1f})")
     print(f"Wrote {args.out}")
