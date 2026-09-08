@@ -1,0 +1,17 @@
+erf_radius_mm_50pct: 48.64424616446996
+erf_radius_mm_90pct: 77.59431685583762
+erf_radius_mm_95pct: 83.46925769759287
+input_shape_zyx:
+- 160
+- 160
+- 64
+spacing_zyx_mm:
+- 0.7536406219005585
+- 0.7536406219005585
+- 2.5
+gradient_mass_fraction_by_occlusion_shell:
+  10-20mm: 0.08255069702863693
+  20-40mm: 0.2714468240737915
+  40-80mm: 0.5475025773048401
+gradient_mass_fraction_within_10mm: 0.023894483223557472
+trainer_name: nnUNetTrainer_TierALite

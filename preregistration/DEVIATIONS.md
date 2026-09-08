@@ -269,3 +269,36 @@ CNN with strong spatial priors to reach comparable held-out localization at this
 As with every entry in this section, this is a diagnostic-only preview (7 held-out cases, single
 fold, single P100) and does not inform or supersede any frozen threshold; it motivates running
 the real Tier A comparison on the full 478-case cohort rather than substituting for it.
+
+## H2 effective receptive field: dry run against both lite checkpoints, and a real bug found (2026-09-08)
+
+`effective_receptive_field.py` (the H2 reference measurement -- see `preregistration/
+PREREGISTRATION.md` section 2) was run against both arms' Tier-A-lite checkpoints as a dry run
+of the actual H2 mechanism-test tooling, ahead of Tier A. Results, written to
+`results/erf_cnn_lite_preview.yaml` / `results/erf_transformer_lite_preview.yaml`:
+
+| arm | 50%-mass radius | 90%-mass radius | 95%-mass radius | mass in 40-80mm shell | mass within 10mm |
+| --- | --- | --- | --- | --- | --- |
+| CNN (`nnUNetTrainer_TierALite`) | 48.6mm | 77.6mm | 83.5mm | 54.8% | 2.4% |
+| Transformer (`nnUNet_PrimusV2_TierALite`) | 66.6mm | 94.4mm | 99.8mm | 49.2% | 1.6% |
+
+This surfaced a real bug in `load_nnunet_network`: it built the network via the generic
+`get_network_from_plans` path unconditionally, which happened to match the CNN (a plain
+ResEnc/conv net) but silently built the *wrong* network for the transformer checkpoint --
+PrimusV2 trainers override `build_network_architecture` entirely to construct the attention-
+based network, and `get_network_from_plans` has no path to that at all. `load_state_dict` then
+failed on every key (missing conv keys, unexpected `eva.*`/attention keys), which is how the
+mismatch was caught rather than silently measuring the wrong architecture's ERF. This would
+have hit identically at real Tier A scale, not just this lite preview. Fixed by reading
+`trainer_name` out of the checkpoint (nnU-Net writes it to every checkpoint) and locating that
+exact trainer class via `recursive_find_python_class`, then calling its own
+`build_network_architecture` staticmethod -- the same dispatch nnU-Net itself uses internally,
+so it now works uniformly for both arms. Verified: the CNN measurement is unchanged before and
+after the fix (regression check); the transformer measurement only became possible after it.
+
+Note the transformer's ERF is *larger* than the CNN's here, despite performing far worse on
+held-out lesions (see the eval entry above) -- effective context width and localization
+accuracy are not the same thing, and this is worth carrying into the eventual H2 discussion
+rather than assuming a larger receptive field is strictly better. As with every entry in this
+section, both numbers are from the 32-case lite checkpoints (diagnostic only) and will be
+superseded by the real Tier A measurement.
