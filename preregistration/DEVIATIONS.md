@@ -203,3 +203,35 @@ already-shipped checkpoint whose saved `current_epoch` does not match its logger
 entry count (rather than requiring the already-corrupted `pdac-tier-a-lite-checkpoints` Dataset
 to be manually patched) -- so the existing session-2 checkpoints resume correctly with no data
 loss, no manual `.pth` surgery, and no epochs re-trained.
+
+## Phase 1 training complete: both arms reached 300/300 epochs (2026-09-08)
+
+Both arms finished the full `TARGET_EPOCHS_PER_ARM = 300` on Dataset601_PDACTierALite fold 0.
+Final epoch-averaged (last 20 epochs) pseudo-dice: CNN (`cnn_resenc_m`, `nnUNetResEncUNetMPlans`)
+~0.50 (best single-epoch 0.67), transformer (`transformer_primusv2s`, `nnUNetPlans`/PrimusV2S)
+~0.40 (best single-epoch 0.56) -- consistent with the earlier-noted pattern of the heavier
+transformer architecture learning more slowly on only 25 real training cases. Both
+`checkpoint_final.pth` files were verified directly (`torch.load`, `current_epoch` compared
+against the logger's actual entry count) to show exactly `current_epoch=300` with no off-by-one
+inflation, confirming the fix above held across every subsequent session.
+
+Getting there required handing the last ~10 epochs of the transformer arm off to a collaborator
+(Spreal) once the owning account exhausted its weekly Kaggle GPU quota at 290/300. This surfaced
+a new, unrelated issue: the collaborator's first handoff run resumed from epoch 182 instead of
+290 and re-trained ground already covered, burning a full ~7h session for zero net progress.
+Root cause: Kaggle's kernel input snapshotting can lag behind a just-published dataset version by
+more than the few minutes that elapsed between the last checkpoint push and the collaborator
+starting their run, so the kernel silently grabbed a stale (pre-session-6) version of the
+`pdac-tier-a-lite-checkpoints` input instead of the latest one. There is no code-level fix for
+this (it is a property of Kaggle's own dataset-versioning propagation, not of
+`phase1_train_lite.py`); the workaround was to have the collaborator explicitly detach and
+re-attach the checkpoints dataset input immediately before each run, and to verify the very first
+logged epoch number in `log_train_transformer_primusv2s.txt` matched the expected resume point
+before letting a session run to completion. The corrected re-run resumed cleanly from epoch 291
+and completed the remaining 9 epochs in one short (~36 min) session.
+
+Next: `scripts/verify/phase1_predict_lite.py` (Kaggle GPU inference on the 7 fold-0 held-out
+cases for both arms) and `scripts/analysis/phase1_eval_lite.py` (local CPU scoring against ground
+truth with the same frozen metrics used elsewhere in this repo) are ready to run against these
+final checkpoints -- neither has been run against real data yet, only verified against synthetic
+data and a source-level CLI cross-check.
