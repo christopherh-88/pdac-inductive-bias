@@ -100,6 +100,13 @@ def stage_occlude(args):
               f"per shell with -f {args.fold} covers them all.")
 
 
+def _find_mask(dir_, cid):
+    # nnU-Net's file_ending varies by dataset config (.nii vs .nii.gz); glob rather than
+    # assume compression so this works against either.
+    matches = sorted(Path(dir_).glob(f"{cid}.nii*"))
+    return matches[0] if matches else None
+
+
 def stage_score(args):
     st = CFG["statistics"]
     margin = CFG["hypotheses"]["h2"]["margin_dice_points"] / 100.0
@@ -111,11 +118,11 @@ def stage_score(args):
     for arm in ("cnn", "tf"):
         for lo, hi in SHELLS:
             pdir = args.workdir / f"pred_{arm}" / f"shell_{lo}_{hi}"
-            for f in sorted(pdir.glob("*.nii.gz")):
-                cid = f.name.replace(".nii.gz", "")
-                ref_p = args.refs / f"{cid}.nii.gz"
-                base_p = Path(base[arm]) / f"{cid}.nii.gz"
-                if not (ref_p.exists() and base_p.exists()):
+            for f in sorted(pdir.glob("*.nii*")):
+                cid = f.name.split(".nii")[0]
+                ref_p = _find_mask(args.refs, cid)
+                base_p = _find_mask(base[arm], cid)
+                if ref_p is None or base_p is None:
                     continue
                 ref, _ = load_mask(ref_p)
                 d_occ = dice(load_mask(f)[0], ref)
