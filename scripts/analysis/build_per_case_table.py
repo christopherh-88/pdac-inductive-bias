@@ -27,7 +27,7 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from metrics import CFG, all_metrics
+from metrics import CFG, all_metrics, find_case_file
 
 
 def parse_arm(spec: str):
@@ -46,9 +46,9 @@ def build(arms, refs: Path, strata: pd.DataFrame, cohort: pd.DataFrame, source_c
     usable, dropped = [], {}
     for cid in strata["case_id"]:
         missing = []
-        if not (refs / f"{cid}.nii.gz").exists():
+        if find_case_file(refs, cid) is None:
             missing.append("reference")
-        missing += [name for name, d in arms if not (d / f"{cid}.nii.gz").exists()]
+        missing += [name for name, d in arms if find_case_file(d, cid) is None]
         (usable.append(cid) if not missing else dropped.setdefault(cid, missing))
     if dropped:
         msg = (f"{len(dropped)} of {len(strata)} cases lack a reference or an arm's prediction, "
@@ -62,7 +62,7 @@ def build(arms, refs: Path, strata: pd.DataFrame, cohort: pd.DataFrame, source_c
     rows = []
     for name, pred_dir in arms:
         for r in tqdm(strata.itertuples(), total=len(strata), desc=f"metrics [{name}]"):
-            m = all_metrics(pred_dir / f"{r.case_id}.nii.gz", refs / f"{r.case_id}.nii.gz")
+            m = all_metrics(find_case_file(pred_dir, r.case_id), find_case_file(refs, r.case_id))
             row = {"case_id": r.case_id, "arm": name, **m,
                    "volume_mm3": r.volume_mm3, "volume_tertile": r.volume_tertile,
                    "cnr_tertile": r.cnr_tertile,

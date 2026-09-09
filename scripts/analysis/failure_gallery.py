@@ -30,6 +30,8 @@ import pandas as pd
 import SimpleITK as sitk
 import yaml
 
+from metrics import find_case_file
+
 CFG = yaml.safe_load(open(Path(__file__).parents[2] / "config" / "analysis_config.yaml"))
 
 
@@ -107,13 +109,13 @@ def main():
     selected = select_gallery(per_case)
     manifest = []
     for r in selected.itertuples():
-        img_path = args.images / f"{r.case_id}_0000.nii.gz"
-        ref_path = args.refs / f"{r.case_id}.nii.gz"
-        pred_cnn_path = args.pred_cnn / f"{r.case_id}.nii.gz"
-        pred_tf_path = args.pred_tf / f"{r.case_id}.nii.gz"
+        img_path = find_case_file(args.images, f"{r.case_id}_0000")
+        ref_path = find_case_file(args.refs, r.case_id)
+        pred_cnn_path = find_case_file(args.pred_cnn, r.case_id)
+        pred_tf_path = find_case_file(args.pred_tf, r.case_id)
         paths = {"image": img_path, "reference": ref_path, "pred_cnn": pred_cnn_path,
                  "pred_tf": pred_tf_path}
-        missing_files = [k for k, p in paths.items() if not p.exists()]
+        missing_files = [k for k, p in paths.items() if p is None]
         if missing_files:
             print(f"SKIP {r.case_id}: missing {missing_files}")
             continue

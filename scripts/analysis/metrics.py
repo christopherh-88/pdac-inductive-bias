@@ -18,6 +18,12 @@ from surface_distance import (compute_surface_distances,
 CFG = yaml.safe_load(open(Path(__file__).parents[2] / "config" / "analysis_config.yaml"))
 
 
+def find_case_file(dir_, cid):
+    """Resolve <dir_>/<cid>.nii or .nii.gz — nnU-Net's file_ending varies by dataset config."""
+    matches = sorted(Path(dir_).glob(f"{cid}.nii*"))
+    return matches[0] if matches else None
+
+
 def load_mask(path, label=None):
     img = sitk.ReadImage(str(path))
     arr = sitk.GetArrayViewFromImage(img)

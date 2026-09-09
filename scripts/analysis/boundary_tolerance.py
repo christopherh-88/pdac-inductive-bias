@@ -24,7 +24,7 @@ import yaml
 from scipy import ndimage
 from tqdm import tqdm
 
-from metrics import CFG, load_mask, dice, bootstrap_ci
+from metrics import CFG, load_mask, dice, bootstrap_ci, find_case_file
 
 
 def jitter_mask(mask, rng, magnitude=1):
@@ -55,8 +55,8 @@ def main():
 
     rows = []
     for cid in tqdm(cases):
-        ref_p = args.refs / f"{cid}.nii.gz"
-        if not ref_p.exists():
+        ref_p = find_case_file(args.refs, cid)
+        if ref_p is None:
             continue
         ref, _ = load_mask(ref_p)
         row = {"case_id": cid}

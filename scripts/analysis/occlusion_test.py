@@ -28,7 +28,7 @@ import SimpleITK as sitk
 import yaml
 from tqdm import tqdm
 
-from metrics import CFG, load_mask, dice, bootstrap_ci
+from metrics import CFG, load_mask, dice, bootstrap_ci, find_case_file
 
 SHELLS = [tuple(s) for s in CFG["hypotheses"]["h2"]["occlusion_shells_mm"]]
 LESION = CFG["labels"]["panorama"]["pdac_lesion"]
@@ -100,13 +100,6 @@ def stage_occlude(args):
               f"per shell with -f {args.fold} covers them all.")
 
 
-def _find_mask(dir_, cid):
-    # nnU-Net's file_ending varies by dataset config (.nii vs .nii.gz); glob rather than
-    # assume compression so this works against either.
-    matches = sorted(Path(dir_).glob(f"{cid}.nii*"))
-    return matches[0] if matches else None
-
-
 def stage_score(args):
     st = CFG["statistics"]
     margin = CFG["hypotheses"]["h2"]["margin_dice_points"] / 100.0
@@ -120,8 +113,8 @@ def stage_score(args):
             pdir = args.workdir / f"pred_{arm}" / f"shell_{lo}_{hi}"
             for f in sorted(pdir.glob("*.nii*")):
                 cid = f.name.split(".nii")[0]
-                ref_p = _find_mask(args.refs, cid)
-                base_p = _find_mask(base[arm], cid)
+                ref_p = find_case_file(args.refs, cid)
+                base_p = find_case_file(base[arm], cid)
                 if ref_p is None or base_p is None:
                     continue
                 ref, _ = load_mask(ref_p)
