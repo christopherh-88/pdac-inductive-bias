@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Phase 1 standing check: the prereg-v1 tag has not been rewritten, and the files it froze
-# have not been edited since. A silently edited frozen config is the one failure mode that
-# invalidates every result downstream of it, so this is a check with an exit code rather than
-# a line in a checklist.
+# Phase 1 standing check: the current freeze tag has not been rewritten, and the files it
+# froze have not been edited since. A silently edited frozen config is the one failure mode
+# that invalidates every result downstream of it, so this is a check with an exit code rather
+# than a line in a checklist.
+#
+# Tag history: prereg-v1 (initial freeze) -> prereg-v1.1 (re-frozen after the Phase 0
+# GPU-verification architecture record was added to config/frozen_thresholds.yaml; see
+# preregistration/DEVIATIONS.md, "Architecture record is preliminary"). Bump TAG here, with a
+# DEVIATIONS.md entry and a new annotated tag, on the next genuine deviation — never edit a
+# frozen file under an existing tag.
 set -uo pipefail
 
-TAG=${TAG:-prereg-v1}
+TAG=${TAG:-prereg-v1.1}
 FROZEN_PATHS=${FROZEN_PATHS:-"config/analysis_config.yaml config/frozen_thresholds.yaml preregistration/PREREGISTRATION.md splits/splits_final.json splits/fold_assignment.csv"}
 status=0
 
