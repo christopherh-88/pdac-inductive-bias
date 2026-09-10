@@ -31,7 +31,7 @@ import pandas as pd
 import SimpleITK as sitk
 import yaml
 
-from metrics import CFG, false_positives, bootstrap_ci
+from metrics import CFG, false_positives, bootstrap_ci, find_case_file
 
 
 def count_case(pred_path: Path):
@@ -83,8 +83,8 @@ def main():
     rows = []
     for arm, condition, pred_dir in preds:
         for _, r in nih.iterrows():
-            p = pred_dir / f"{r['case_id']}.nii.gz"
-            if not p.exists():
+            p = find_case_file(pred_dir, r['case_id'])
+            if p is None:
                 continue
             rows.append({"case_id": r["case_id"], "patient_id": r["patient_id"], "arm": arm,
                          "condition": condition, "fp_count": count_case(p)})

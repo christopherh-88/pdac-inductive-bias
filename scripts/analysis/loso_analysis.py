@@ -29,7 +29,7 @@ import pandas as pd
 import yaml
 from tqdm import tqdm
 
-from metrics import CFG, all_metrics, bootstrap_ci
+from metrics import CFG, all_metrics, bootstrap_ci, find_case_file
 
 
 def parse_pred(spec: str):
@@ -73,9 +73,9 @@ def main():
                 print(f"SKIP {arm} / {source}: no in-domain rows for this arm+source")
                 continue
             for r in tqdm(cases.itertuples(), total=len(cases), desc=f"{arm}/{source}"):
-                pred = pdir / f"{r.case_id}.nii.gz"
-                ref = args.refs / f"{r.case_id}.nii.gz"
-                if not (pred.exists() and ref.exists()):
+                pred = find_case_file(pdir, r.case_id)
+                ref = find_case_file(args.refs, r.case_id)
+                if pred is None or ref is None:
                     continue
                 m = all_metrics(pred, ref)
                 rows.append({

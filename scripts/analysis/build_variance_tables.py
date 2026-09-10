@@ -27,7 +27,7 @@ import pandas as pd
 import yaml
 from tqdm import tqdm
 
-from metrics import CFG, all_metrics
+from metrics import CFG, all_metrics, find_case_file
 
 
 def parse_seed_pred(spec: str):
@@ -77,8 +77,8 @@ def main():
         if not args.refs:
             raise SystemExit("--refs is required when --seed-pred is given")
         for cid in tqdm(rep_cases, desc=f"seed {seed}"):
-            pred, ref = pred_dir / f"{cid}.nii.gz", args.refs / f"{cid}.nii.gz"
-            if not (pred.exists() and ref.exists()):
+            pred, ref = find_case_file(pred_dir, cid), find_case_file(args.refs, cid)
+            if pred is None or ref is None:
                 continue
             seed_rows.append({"case_id": cid, "seed": seed, "dice": all_metrics(pred, ref)["dice"]})
 
