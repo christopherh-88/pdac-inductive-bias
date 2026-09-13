@@ -6,7 +6,7 @@ dataset (`Dataset601_PDACTierALite`) — every script in the deliverables table 
 error. **Nothing has been run against the real ~481-case cohort.** That's the entire remaining
 gap: no code to write, only GPU time to spend and data to assemble.
 
-Read [README.md](../../../README.md) sections "Where each publication deliverable comes from"
+Read [README.md](../README.md) sections "Where each publication deliverable comes from"
 and "Running it" first — this document is a sequenced checklist against that, not a
 replacement for it.
 
