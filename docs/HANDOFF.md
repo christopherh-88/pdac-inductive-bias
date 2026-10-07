@@ -113,5 +113,3 @@ replacement for it.
   `splits/fold_assignment.csv`) after a tag is cut is a deviation: record it in
   `preregistration/DEVIATIONS.md` and cut a new tag. Never a silent edit — `check_prereg_tag.sh`
   exists specifically to catch this and should be run periodically, not just once.
-- Commits to this repo omit the `Co-Authored-By: Claude` trailer — it caused a full revert once
-  before (see repo history / commit norms if picking this convention up mid-stream).
